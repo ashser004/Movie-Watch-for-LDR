@@ -73,6 +73,7 @@ fun KanDalooApp(
 
         composable("home") {
             HomeScreen(
+                roomManager = roomManager,
                 onCreateRoom = { maxMembers ->
                     val roomCode = roomManager.generateRoomCode()
                     currentRoomCode = roomCode
@@ -89,6 +90,18 @@ fun KanDalooApp(
                 onJoinRoom = { roomCode ->
                     currentRoomCode = roomCode
                     isCurrentUserHost = false
+                    roomManager.joinRoom(
+                        roomCode = roomCode,
+                        onSuccess = {
+                            navController.navigate("room")
+                        },
+                        onFailure = { /* handled inside */ }
+                    )
+                },
+                onRejoinRoom = { roomCode ->
+                    currentRoomCode = roomCode
+                    isCurrentUserHost = false
+                    roomManager.removeRejoinEntry(roomCode)
                     roomManager.joinRoom(
                         roomCode = roomCode,
                         onSuccess = {

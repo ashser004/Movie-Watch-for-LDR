@@ -1,8 +1,10 @@
 package com.ash.kandaloo.service
 
+import com.ash.kandaloo.data.ChatMessage
 import com.ash.kandaloo.data.MemberData
 import com.ash.kandaloo.data.PlaybackState
 import com.ash.kandaloo.data.ReactionEvent
+import com.ash.kandaloo.data.RejoinInfo
 import com.ash.kandaloo.data.VideoMetadata
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.database.DataSnapshot
@@ -19,6 +21,7 @@ class RoomManager {
 
     private val database = FirebaseDatabase.getInstance("https://kandaloo-default-rtdb.asia-southeast1.firebasedatabase.app")
     private val roomsRef = database.getReference("rooms")
+    private val usersRef = database.getReference("users")
     private val auth = FirebaseAuth.getInstance()
 
     private val currentUser get() = auth.currentUser
@@ -218,14 +221,131 @@ class RoomManager {
 
     fun leaveRoom(roomCode: String) {
         val user = currentUser ?: return
+        // Remove member from room
         roomsRef.child(roomCode).child("members").child(user.uid).removeValue()
+
+        // Send leave notification as a chat message
+        sendSystemMessage(roomCode, "${user.displayName ?: "Someone"} left the room", "leave")
+
+        // Save rejoin info under user's node
+        roomsRef.child(roomCode).get().addOnSuccessListener { snapshot ->
+            val hostName = snapshot.child("hostName").value as? String ?: ""
+            val membersCount = snapshot.child("members").childrenCount.toInt()
+            val status = snapshot.child("status").value as? String ?: "waiting"
+
+            if (membersCount == 0 || status == "ended") {
+                // Last person left — clean up room
+                roomsRef.child(roomCode).child("status").setValue("ended")
+                // Remove rejoin entry
+                usersRef.child(user.uid).child("recentRooms").child(roomCode).removeValue()
+            } else {
+                // Room still active — save rejoin info
+                usersRef.child(user.uid).child("recentRooms").child(roomCode).setValue(
+                    mapOf(
+                        "roomCode" to roomCode,
+                        "hostName" to hostName,
+                        "leftAt" to ServerValue.TIMESTAMP
+                    )
+                )
+            }
+        }
     }
 
     fun endRoom(roomCode: String) {
         roomsRef.child(roomCode).child("status").setValue("ended")
+        // Clean up all users' rejoin entries for this room
+        roomsRef.child(roomCode).child("members").get().addOnSuccessListener { snapshot ->
+            snapshot.children.forEach { child ->
+                val uid = child.key ?: return@forEach
+                usersRef.child(uid).child("recentRooms").child(roomCode).removeValue()
+            }
+        }
     }
 
     fun deleteRoom(roomCode: String) {
         roomsRef.child(roomCode).removeValue()
+    }
+
+    // Chat methods
+    fun sendChatMessage(roomCode: String, message: String) {
+        val user = currentUser ?: return
+        val chatMsg = mapOf(
+            "senderId" to user.uid,
+            "senderName" to (user.displayName ?: ""),
+            "message" to message,
+            "timestamp" to ServerValue.TIMESTAMP,
+            "type" to "chat"
+        )
+        roomsRef.child(roomCode).child("chat").push().setValue(chatMsg)
+    }
+
+    fun sendSystemMessage(roomCode: String, message: String, type: String) {
+        val chatMsg = mapOf(
+            "senderId" to "system",
+            "senderName" to "System",
+            "message" to message,
+            "timestamp" to ServerValue.TIMESTAMP,
+            "type" to type
+        )
+        roomsRef.child(roomCode).child("chat").push().setValue(chatMsg)
+    }
+
+    fun observeChat(roomCode: String): Flow<ChatMessage> = callbackFlow {
+        val listener = object : com.google.firebase.database.ChildEventListener {
+            override fun onChildAdded(snapshot: DataSnapshot, previousChildName: String?) {
+                @Suppress("UNCHECKED_CAST")
+                val map = snapshot.value as? Map<String, Any?> ?: return
+                val msg = ChatMessage.fromMap(snapshot.key ?: "", map)
+                trySend(msg)
+            }
+            override fun onChildChanged(s: DataSnapshot, p: String?) {}
+            override fun onChildRemoved(s: DataSnapshot) {}
+            override fun onChildMoved(s: DataSnapshot, p: String?) {}
+            override fun onCancelled(error: DatabaseError) {
+                close(error.toException())
+            }
+        }
+        roomsRef.child(roomCode).child("chat").addChildEventListener(listener)
+        awaitClose { roomsRef.child(roomCode).child("chat").removeEventListener(listener) }
+    }
+
+    // Rejoin methods
+    fun getRecentRooms(onResult: (List<RejoinInfo>) -> Unit) {
+        val user = currentUser ?: run { onResult(emptyList()); return }
+        usersRef.child(user.uid).child("recentRooms").get().addOnSuccessListener { snapshot ->
+            val rooms = mutableListOf<RejoinInfo>()
+            snapshot.children.forEach { child ->
+                val roomCode = child.child("roomCode").value as? String ?: return@forEach
+                val hostName = child.child("hostName").value as? String ?: ""
+                val leftAt = (child.child("leftAt").value as? Long)
+                    ?: (child.child("leftAt").value as? Number)?.toLong() ?: 0L
+                rooms.add(RejoinInfo(roomCode, hostName, leftAt))
+            }
+            // Sort by latest left first
+            rooms.sortByDescending { it.leftAt }
+            onResult(rooms)
+        }.addOnFailureListener {
+            onResult(emptyList())
+        }
+    }
+
+    fun checkRoomStillActive(roomCode: String, onResult: (Boolean) -> Unit) {
+        roomsRef.child(roomCode).get().addOnSuccessListener { snapshot ->
+            val status = snapshot.child("status").value as? String ?: "ended"
+            val membersCount = snapshot.child("members").childrenCount.toInt()
+            onResult(status != "ended" && membersCount > 0)
+        }.addOnFailureListener {
+            onResult(false)
+        }
+    }
+
+    fun removeRejoinEntry(roomCode: String) {
+        val user = currentUser ?: return
+        usersRef.child(user.uid).child("recentRooms").child(roomCode).removeValue()
+    }
+
+    fun sendJoinNotification(roomCode: String) {
+        val user = currentUser ?: return
+        sendSystemMessage(roomCode, "${user.displayName ?: "Someone"} joined the room", "join")
     }
 }

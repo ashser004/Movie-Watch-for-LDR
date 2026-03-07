@@ -92,3 +92,37 @@ data class ReactionEvent(
     val senderName: String = "",
     val timestamp: Long = 0L
 )
+
+data class ChatMessage(
+    val id: String = "",
+    val senderId: String = "",
+    val senderName: String = "",
+    val message: String = "",
+    val timestamp: Long = 0L,
+    val type: String = "chat" // "chat", "join", "leave"
+) {
+    fun toMap(): Map<String, Any> = mapOf(
+        "senderId" to senderId,
+        "senderName" to senderName,
+        "message" to message,
+        "timestamp" to timestamp,
+        "type" to type
+    )
+
+    companion object {
+        fun fromMap(id: String, map: Map<String, Any?>): ChatMessage = ChatMessage(
+            id = id,
+            senderId = (map["senderId"] as? String) ?: "",
+            senderName = (map["senderName"] as? String) ?: "",
+            message = (map["message"] as? String) ?: "",
+            timestamp = (map["timestamp"] as? Long) ?: (map["timestamp"] as? Number)?.toLong() ?: 0L,
+            type = (map["type"] as? String) ?: "chat"
+        )
+    }
+}
+
+data class RejoinInfo(
+    val roomCode: String = "",
+    val hostName: String = "",
+    val leftAt: Long = 0L
+)

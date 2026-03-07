@@ -240,7 +240,7 @@ fun SettingsScreen(
                 )
                 Spacer(modifier = Modifier.width(4.dp))
                 Text(
-                    text = "KanDaloo v1.0 • Made with ❤️",
+                    text = "KanDeloo v2.0 • Made with ❤️",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.4f)
                 )
@@ -254,7 +254,7 @@ fun SettingsScreen(
             onDismissRequest = { showLogoutDialog = false },
             shape = RoundedCornerShape(24.dp),
             title = { Text("Sign Out?") },
-            text = { Text("You'll need to sign in again to use KanDaloo.") },
+            text = { Text("You'll need to sign in again to use KanDeloo.") },
             confirmButton = {
                 TextButton(onClick = {
                     showLogoutDialog = false

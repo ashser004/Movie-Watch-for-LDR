@@ -1,5 +1,7 @@
 package com.ash.kandaloo.ui.screens
 
+import android.app.Activity
+import android.content.pm.ActivityInfo
 import android.net.Uri
 import android.view.ViewGroup
 import android.widget.FrameLayout
@@ -18,6 +20,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -36,6 +40,7 @@ import androidx.compose.material.icons.filled.Mood
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
@@ -74,9 +79,12 @@ import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
+import com.ash.kandaloo.data.ChatMessage
 import com.ash.kandaloo.data.PlaybackState
 import com.ash.kandaloo.data.ReactionEvent
 import com.ash.kandaloo.service.RoomManager
+import com.ash.kandaloo.ui.components.ChatSection
+import com.ash.kandaloo.ui.components.FloatingMessageOverlay
 import com.ash.kandaloo.ui.components.ReactionOverlay
 import com.ash.kandaloo.ui.components.ReactionPicker
 import com.google.firebase.auth.FirebaseAuth
@@ -93,6 +101,7 @@ fun VideoPlayerScreen(
     onExit: () -> Unit
 ) {
     val context = LocalContext.current
+    val activity = context as? Activity
     val scope = rememberCoroutineScope()
     val currentUserId = FirebaseAuth.getInstance().currentUser?.uid ?: ""
 
@@ -106,9 +115,12 @@ fun VideoPlayerScreen(
     var currentPosition by remember { mutableLongStateOf(0L) }
     var duration by remember { mutableLongStateOf(0L) }
     var isPlaying by remember { mutableStateOf(false) }
+    var isVideoEnded by remember { mutableStateOf(false) }
     var currentSpeed by remember { mutableFloatStateOf(1.0f) }
     var isSyncUpdate by remember { mutableStateOf(false) }
     val visibleReactions = remember { mutableStateListOf<ReactionEvent>() }
+    val chatMessages = remember { mutableStateListOf<ChatMessage>() }
+    val floatingMessages = remember { mutableStateListOf<ChatMessage>() }
 
     val exoPlayer = remember {
         ExoPlayer.Builder(context)
@@ -119,6 +131,22 @@ fun VideoPlayerScreen(
                 prepare()
                 playWhenReady = false
             }
+    }
+
+    // Handle orientation based on fullscreen state
+    LaunchedEffect(isFullscreen) {
+        activity?.requestedOrientation = if (isFullscreen) {
+            ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        } else {
+            ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        }
+    }
+
+    // Reset orientation on dispose
+    DisposableEffect(Unit) {
+        onDispose {
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
     }
 
     // Position update loop
@@ -146,25 +174,19 @@ fun VideoPlayerScreen(
     val remoteState by playbackFlow.collectAsState(initial = PlaybackState())
 
     LaunchedEffect(remoteState) {
-        // Skip if this update originated from us
         if (remoteState.lastUpdatedBy == currentUserId) return@LaunchedEffect
         if (remoteState.lastUpdatedAt == 0L) return@LaunchedEffect
 
         isSyncUpdate = true
-
-        // Apply remote state
         val positionDiff = kotlin.math.abs(exoPlayer.currentPosition - remoteState.positionMs)
-        // Only seek if position differs by more than 2 seconds
         if (positionDiff > 2000) {
             exoPlayer.seekTo(remoteState.positionMs)
         }
-
         exoPlayer.playWhenReady = remoteState.isPlaying
         if (exoPlayer.playbackParameters.speed != remoteState.speed) {
             exoPlayer.playbackParameters = PlaybackParameters(remoteState.speed)
             currentSpeed = remoteState.speed
         }
-
         delay(300)
         isSyncUpdate = false
     }
@@ -181,6 +203,22 @@ fun VideoPlayerScreen(
         visibleReactions.remove(reaction)
     }
 
+    // Listen for chat messages
+    val chatFlow = remember { roomManager.observeChat(roomCode) }
+    val latestChat by chatFlow.collectAsState(initial = null)
+
+    LaunchedEffect(latestChat) {
+        val msg = latestChat ?: return@LaunchedEffect
+        chatMessages.add(msg)
+
+        // If in fullscreen, also show as floating message
+        if (isFullscreen && msg.senderId != currentUserId) {
+            floatingMessages.add(msg)
+            delay(4000)
+            floatingMessages.remove(msg)
+        }
+    }
+
     // Player listener for local state changes -> push to Firebase
     DisposableEffect(exoPlayer) {
         val listener = object : Player.Listener {
@@ -194,6 +232,12 @@ fun VideoPlayerScreen(
                     lastUpdatedAt = System.currentTimeMillis()
                 ))
             }
+
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == Player.STATE_ENDED) {
+                    isVideoEnded = true
+                }
+            }
         }
         exoPlayer.addListener(listener)
         onDispose {
@@ -203,293 +247,236 @@ fun VideoPlayerScreen(
     }
 
     BackHandler {
-        showExitDialog = true
+        if (isFullscreen) {
+            isFullscreen = false
+        } else {
+            showExitDialog = true
+        }
     }
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black)
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null
-            ) {
+    if (isFullscreen) {
+        // ──────────── FULLSCREEN / LANDSCAPE MODE ────────────
+        FullscreenPlayer(
+            exoPlayer = exoPlayer,
+            roomCode = roomCode,
+            roomManager = roomManager,
+            currentUserId = currentUserId,
+            showControls = showControls,
+            showReactions = showReactions,
+            showSpeedMenu = showSpeedMenu,
+            isPlaying = isPlaying,
+            isVideoEnded = isVideoEnded,
+            isUserSeeking = isUserSeeking,
+            seekPosition = seekPosition,
+            currentPosition = currentPosition,
+            duration = duration,
+            currentSpeed = currentSpeed,
+            visibleReactions = visibleReactions.toList(),
+            floatingMessages = floatingMessages.toList(),
+            onToggleControls = {
                 showControls = !showControls
                 showReactions = false
-            }
-    ) {
-        // Video Player
-        AndroidView(
-            factory = { ctx ->
-                PlayerView(ctx).apply {
-                    player = exoPlayer
-                    useController = false
-                    layoutParams = FrameLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.MATCH_PARENT
-                    )
+            },
+            onToggleReactions = {
+                showReactions = !showReactions
+                showControls = true
+            },
+            onToggleSpeedMenu = { showSpeedMenu = !showSpeedMenu },
+            onDismissSpeedMenu = { showSpeedMenu = false },
+            onSpeedChange = { speed ->
+                currentSpeed = speed
+                exoPlayer.playbackParameters = PlaybackParameters(speed)
+                showSpeedMenu = false
+                roomManager.updatePlaybackState(roomCode, PlaybackState(
+                    isPlaying = exoPlayer.isPlaying,
+                    positionMs = exoPlayer.currentPosition,
+                    speed = speed,
+                    lastUpdatedBy = currentUserId,
+                    lastUpdatedAt = System.currentTimeMillis()
+                ))
+            },
+            onSeekStart = { fraction ->
+                isUserSeeking = true
+                seekPosition = (fraction * duration).toLong()
+            },
+            onSeekEnd = {
+                exoPlayer.seekTo(seekPosition)
+                isUserSeeking = false
+                roomManager.updatePlaybackState(roomCode, PlaybackState(
+                    isPlaying = exoPlayer.playWhenReady,
+                    positionMs = seekPosition,
+                    speed = currentSpeed,
+                    lastUpdatedBy = currentUserId,
+                    lastUpdatedAt = System.currentTimeMillis()
+                ))
+            },
+            onPlayPause = {
+                if (isVideoEnded) {
+                    exoPlayer.seekTo(0)
+                    exoPlayer.playWhenReady = true
+                    isVideoEnded = false
+                } else {
+                    exoPlayer.playWhenReady = !exoPlayer.playWhenReady
                 }
             },
-            modifier = Modifier.fillMaxSize()
-        )
-
-        // Reactions overlay (right side)
-        if (!isFullscreen) {
-            ReactionOverlay(
-                reactions = visibleReactions.toList(),
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(end = 16.dp, bottom = 140.dp)
-            )
-        }
-
-        // Controls overlay
-        AnimatedVisibility(
-            visible = showControls,
-            enter = fadeIn(),
-            exit = fadeOut()
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.4f))
-            ) {
-                // Top bar
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .statusBarsPadding()
-                        .padding(horizontal = 8.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    IconButton(onClick = { showExitDialog = true }) {
-                        Icon(
-                            Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Exit",
-                            tint = Color.White
-                        )
-                    }
-
-                    Text(
-                        text = "Room: $roomCode",
-                        color = Color.White,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.weight(1f)
-                    )
-
-                    // Member count indicator
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(20.dp))
-                            .background(Color.White.copy(alpha = 0.15f))
-                            .padding(horizontal = 12.dp, vertical = 6.dp)
-                    ) {
-                        Icon(
-                            Icons.Default.People,
-                            contentDescription = null,
-                            tint = Color.White,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            "Live",
-                            color = Color.White,
-                            style = MaterialTheme.typography.labelSmall
-                        )
-                    }
-                }
-
-                // Center controls
-                Row(
-                    modifier = Modifier.align(Alignment.Center),
-                    horizontalArrangement = Arrangement.spacedBy(32.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    // Play/Pause
-                    IconButton(
-                        onClick = {
-                            exoPlayer.playWhenReady = !exoPlayer.playWhenReady
-                        },
-                        modifier = Modifier
-                            .size(72.dp)
-                            .clip(CircleShape)
-                            .background(Color.White.copy(alpha = 0.2f))
-                    ) {
-                        Icon(
-                            if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                            contentDescription = if (isPlaying) "Pause" else "Play",
-                            tint = Color.White,
-                            modifier = Modifier.size(40.dp)
-                        )
-                    }
-                }
-
-                // Bottom controls
-                Column(
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .navigationBarsPadding()
-                        .padding(horizontal = 16.dp, vertical = 8.dp)
-                ) {
-                    // Progress bar
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(
-                            text = formatTime(if (isUserSeeking) seekPosition else currentPosition),
-                            color = Color.White,
-                            style = MaterialTheme.typography.labelSmall,
-                            fontSize = 12.sp
-                        )
-
-                        Slider(
-                            value = if (duration > 0) {
-                                (if (isUserSeeking) seekPosition else currentPosition).toFloat() / duration.toFloat()
-                            } else 0f,
-                            onValueChange = { fraction ->
-                                isUserSeeking = true
-                                seekPosition = (fraction * duration).toLong()
-                            },
-                            onValueChangeFinished = {
-                                exoPlayer.seekTo(seekPosition)
-                                isUserSeeking = false
-                                // Send seek update to Firebase
-                                roomManager.updatePlaybackState(roomCode, PlaybackState(
-                                    isPlaying = exoPlayer.playWhenReady,
-                                    positionMs = seekPosition,
-                                    speed = currentSpeed,
-                                    lastUpdatedBy = currentUserId,
-                                    lastUpdatedAt = System.currentTimeMillis()
-                                ))
-                            },
-                            modifier = Modifier
-                                .weight(1f)
-                                .padding(horizontal = 8.dp),
-                            colors = SliderDefaults.colors(
-                                thumbColor = MaterialTheme.colorScheme.primary,
-                                activeTrackColor = MaterialTheme.colorScheme.primary,
-                                inactiveTrackColor = Color.White.copy(alpha = 0.3f)
-                            )
-                        )
-
-                        Text(
-                            text = formatTime(duration),
-                            color = Color.White,
-                            style = MaterialTheme.typography.labelSmall,
-                            fontSize = 12.sp
-                        )
-                    }
-
-                    // Bottom action row
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        // Speed selector
-                        Box {
-                            IconButton(onClick = { showSpeedMenu = true }) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(
-                                        Icons.Default.Speed,
-                                        contentDescription = "Speed",
-                                        tint = Color.White,
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text(
-                                        "${currentSpeed}x",
-                                        color = Color.White,
-                                        style = MaterialTheme.typography.labelSmall
-                                    )
-                                }
-                            }
-
-                            DropdownMenu(
-                                expanded = showSpeedMenu,
-                                onDismissRequest = { showSpeedMenu = false }
-                            ) {
-                                listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f).forEach { speed ->
-                                    DropdownMenuItem(
-                                        text = {
-                                            Text(
-                                                "${speed}x",
-                                                fontWeight = if (speed == currentSpeed) FontWeight.Bold else FontWeight.Normal
-                                            )
-                                        },
-                                        onClick = {
-                                            currentSpeed = speed
-                                            exoPlayer.playbackParameters = PlaybackParameters(speed)
-                                            showSpeedMenu = false
-                                            roomManager.updatePlaybackState(roomCode, PlaybackState(
-                                                isPlaying = exoPlayer.isPlaying,
-                                                positionMs = exoPlayer.currentPosition,
-                                                speed = speed,
-                                                lastUpdatedBy = currentUserId,
-                                                lastUpdatedAt = System.currentTimeMillis()
-                                            ))
-                                        }
-                                    )
-                                }
-                            }
-                        }
-
-                        // Reactions button
-                        if (!isFullscreen) {
-                            IconButton(onClick = {
-                                showReactions = !showReactions
-                                showControls = true
-                            }) {
-                                Icon(
-                                    Icons.Default.Mood,
-                                    contentDescription = "Reactions",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(24.dp)
-                                )
-                            }
-                        }
-
-                        // Fullscreen toggle
-                        IconButton(onClick = { isFullscreen = !isFullscreen }) {
-                            Icon(
-                                if (isFullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
-                                contentDescription = "Fullscreen",
-                                tint = Color.White
-                            )
-                        }
-                    }
+            onExitFullscreen = { isFullscreen = false },
+            onExit = { showExitDialog = true },
+            onReaction = { emoji ->
+                roomManager.sendReaction(roomCode, emoji)
+                val localReaction = ReactionEvent(
+                    emoji = emoji,
+                    senderId = currentUserId,
+                    senderName = "You",
+                    timestamp = System.currentTimeMillis()
+                )
+                visibleReactions.add(localReaction)
+                scope.launch {
+                    delay(3000)
+                    visibleReactions.remove(localReaction)
                 }
             }
-        }
-
-        // Reaction picker (bottom)
-        AnimatedVisibility(
-            visible = showReactions && !isFullscreen,
-            enter = slideInVertically { it } + fadeIn(),
-            exit = slideOutVertically { it } + fadeOut(),
+        )
+    } else {
+        // ──────────── PORTRAIT MODE ────────────
+        Column(
             modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .navigationBarsPadding()
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.background)
         ) {
-            ReactionPicker(
-                onReactionSelected = { emoji ->
-                    roomManager.sendReaction(roomCode, emoji)
-                    // Show locally too
-                    val localReaction = ReactionEvent(
-                        emoji = emoji,
-                        senderId = currentUserId,
-                        senderName = "You",
-                        timestamp = System.currentTimeMillis()
-                    )
-                    visibleReactions.add(localReaction)
-                    scope.launch {
-                        delay(3000)
-                        visibleReactions.remove(localReaction)
+            // Video player (16:9 aspect ratio at top)
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(16f / 9f)
+                    .background(Color.Black)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) {
+                        showControls = !showControls
+                        showReactions = false
                     }
+            ) {
+                AndroidView(
+                    factory = { ctx ->
+                        PlayerView(ctx).apply {
+                            player = exoPlayer
+                            useController = false
+                            layoutParams = FrameLayout.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.MATCH_PARENT
+                            )
+                        }
+                    },
+                    modifier = Modifier.fillMaxSize()
+                )
+
+                // Reactions overlay
+                ReactionOverlay(
+                    reactions = visibleReactions.toList(),
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(end = 8.dp, bottom = 48.dp)
+                )
+
+                // Controls overlay
+                AnimatedVisibility(
+                    visible = showControls,
+                    enter = fadeIn(),
+                    exit = fadeOut()
+                ) {
+                    PortraitVideoControls(
+                        roomCode = roomCode,
+                        isPlaying = isPlaying,
+                        isVideoEnded = isVideoEnded,
+                        isUserSeeking = isUserSeeking,
+                        seekPosition = seekPosition,
+                        currentPosition = currentPosition,
+                        duration = duration,
+                        currentSpeed = currentSpeed,
+                        showSpeedMenu = showSpeedMenu,
+                        showReactions = showReactions,
+                        onPlayPause = {
+                            if (isVideoEnded) {
+                                exoPlayer.seekTo(0)
+                                exoPlayer.playWhenReady = true
+                                isVideoEnded = false
+                            } else {
+                                exoPlayer.playWhenReady = !exoPlayer.playWhenReady
+                            }
+                        },
+                        onSeekStart = { fraction ->
+                            isUserSeeking = true
+                            seekPosition = (fraction * duration).toLong()
+                        },
+                        onSeekEnd = {
+                            exoPlayer.seekTo(seekPosition)
+                            isUserSeeking = false
+                            roomManager.updatePlaybackState(roomCode, PlaybackState(
+                                isPlaying = exoPlayer.playWhenReady,
+                                positionMs = seekPosition,
+                                speed = currentSpeed,
+                                lastUpdatedBy = currentUserId,
+                                lastUpdatedAt = System.currentTimeMillis()
+                            ))
+                        },
+                        onToggleSpeedMenu = { showSpeedMenu = !showSpeedMenu },
+                        onDismissSpeedMenu = { showSpeedMenu = false },
+                        onSpeedChange = { speed ->
+                            currentSpeed = speed
+                            exoPlayer.playbackParameters = PlaybackParameters(speed)
+                            showSpeedMenu = false
+                            roomManager.updatePlaybackState(roomCode, PlaybackState(
+                                isPlaying = exoPlayer.isPlaying,
+                                positionMs = exoPlayer.currentPosition,
+                                speed = speed,
+                                lastUpdatedBy = currentUserId,
+                                lastUpdatedAt = System.currentTimeMillis()
+                            ))
+                        },
+                        onToggleReactions = {
+                            showReactions = !showReactions
+                            showControls = true
+                        },
+                        onFullscreen = { isFullscreen = true },
+                        onExit = { showExitDialog = true }
+                    )
                 }
+
+                // Reaction picker (mini, attached to video area)
+                AnimatedVisibility(
+                    visible = showReactions,
+                    enter = slideInVertically { it } + fadeIn(),
+                    exit = slideOutVertically { it } + fadeOut(),
+                    modifier = Modifier.align(Alignment.BottomCenter)
+                ) {
+                    ReactionPicker(
+                        onReactionSelected = { emoji ->
+                            roomManager.sendReaction(roomCode, emoji)
+                            val localReaction = ReactionEvent(
+                                emoji = emoji,
+                                senderId = currentUserId,
+                                senderName = "You",
+                                timestamp = System.currentTimeMillis()
+                            )
+                            visibleReactions.add(localReaction)
+                            scope.launch {
+                                delay(3000)
+                                visibleReactions.remove(localReaction)
+                            }
+                        }
+                    )
+                }
+            }
+
+            // Chat section below video
+            ChatSection(
+                messages = chatMessages.toList(),
+                currentUserId = currentUserId,
+                onSendMessage = { message ->
+                    roomManager.sendChatMessage(roomCode, message)
+                },
+                modifier = Modifier.weight(1f)
             )
         }
     }
@@ -527,6 +514,458 @@ fun VideoPlayerScreen(
                 }
             }
         )
+    }
+}
+
+// ─────────── PORTRAIT VIDEO CONTROLS ───────────
+
+@Composable
+private fun PortraitVideoControls(
+    roomCode: String,
+    isPlaying: Boolean,
+    isVideoEnded: Boolean,
+    isUserSeeking: Boolean,
+    seekPosition: Long,
+    currentPosition: Long,
+    duration: Long,
+    currentSpeed: Float,
+    showSpeedMenu: Boolean,
+    showReactions: Boolean,
+    onPlayPause: () -> Unit,
+    onSeekStart: (Float) -> Unit,
+    onSeekEnd: () -> Unit,
+    onToggleSpeedMenu: () -> Unit,
+    onDismissSpeedMenu: () -> Unit,
+    onSpeedChange: (Float) -> Unit,
+    onToggleReactions: () -> Unit,
+    onFullscreen: () -> Unit,
+    onExit: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.4f))
+    ) {
+        // Top bar
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .statusBarsPadding()
+                .padding(horizontal = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = onExit) {
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Exit",
+                    tint = Color.White
+                )
+            }
+            Text(
+                text = "Room: $roomCode",
+                color = Color.White,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f)
+            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(Color.White.copy(alpha = 0.15f))
+                    .padding(horizontal = 10.dp, vertical = 4.dp)
+            ) {
+                Icon(
+                    Icons.Default.People,
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(14.dp)
+                )
+                Spacer(modifier = Modifier.width(3.dp))
+                Text("Live", color = Color.White, style = MaterialTheme.typography.labelSmall)
+            }
+        }
+
+        // Center play/pause
+        IconButton(
+            onClick = onPlayPause,
+            modifier = Modifier
+                .align(Alignment.Center)
+                .size(56.dp)
+                .clip(CircleShape)
+                .background(Color.White.copy(alpha = 0.2f))
+        ) {
+            Icon(
+                when {
+                    isVideoEnded -> Icons.Default.Replay
+                    isPlaying -> Icons.Default.Pause
+                    else -> Icons.Default.PlayArrow
+                },
+                contentDescription = when {
+                    isVideoEnded -> "Restart"
+                    isPlaying -> "Pause"
+                    else -> "Play"
+                },
+                tint = Color.White,
+                modifier = Modifier.size(32.dp)
+            )
+        }
+
+        // Bottom controls
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(horizontal = 12.dp, vertical = 4.dp)
+        ) {
+            // Seek bar
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = formatTime(if (isUserSeeking) seekPosition else currentPosition),
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontSize = 11.sp
+                )
+                Slider(
+                    value = if (duration > 0) {
+                        (if (isUserSeeking) seekPosition else currentPosition).toFloat() / duration.toFloat()
+                    } else 0f,
+                    onValueChange = { onSeekStart(it) },
+                    onValueChangeFinished = onSeekEnd,
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(horizontal = 6.dp),
+                    colors = SliderDefaults.colors(
+                        thumbColor = MaterialTheme.colorScheme.primary,
+                        activeTrackColor = MaterialTheme.colorScheme.primary,
+                        inactiveTrackColor = Color.White.copy(alpha = 0.3f)
+                    )
+                )
+                Text(
+                    text = formatTime(duration),
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontSize = 11.sp
+                )
+            }
+
+            // Action row
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Speed
+                Box {
+                    IconButton(onClick = onToggleSpeedMenu) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Default.Speed,
+                                contentDescription = "Speed",
+                                tint = Color.White,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(3.dp))
+                            Text("${currentSpeed}x", color = Color.White, fontSize = 11.sp)
+                        }
+                    }
+                    DropdownMenu(expanded = showSpeedMenu, onDismissRequest = onDismissSpeedMenu) {
+                        listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f).forEach { speed ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        "${speed}x",
+                                        fontWeight = if (speed == currentSpeed) FontWeight.Bold else FontWeight.Normal
+                                    )
+                                },
+                                onClick = { onSpeedChange(speed) }
+                            )
+                        }
+                    }
+                }
+
+                // Reactions
+                IconButton(onClick = onToggleReactions) {
+                    Icon(
+                        Icons.Default.Mood,
+                        contentDescription = "Reactions",
+                        tint = Color.White,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+
+                // Fullscreen
+                IconButton(onClick = onFullscreen) {
+                    Icon(
+                        Icons.Default.Fullscreen,
+                        contentDescription = "Fullscreen",
+                        tint = Color.White
+                    )
+                }
+            }
+        }
+    }
+}
+
+// ─────────── FULLSCREEN PLAYER ───────────
+
+@OptIn(UnstableApi::class)
+@Composable
+private fun FullscreenPlayer(
+    exoPlayer: ExoPlayer,
+    roomCode: String,
+    roomManager: RoomManager,
+    currentUserId: String,
+    showControls: Boolean,
+    showReactions: Boolean,
+    showSpeedMenu: Boolean,
+    isPlaying: Boolean,
+    isVideoEnded: Boolean,
+    isUserSeeking: Boolean,
+    seekPosition: Long,
+    currentPosition: Long,
+    duration: Long,
+    currentSpeed: Float,
+    visibleReactions: List<ReactionEvent>,
+    floatingMessages: List<ChatMessage>,
+    onToggleControls: () -> Unit,
+    onToggleReactions: () -> Unit,
+    onToggleSpeedMenu: () -> Unit,
+    onDismissSpeedMenu: () -> Unit,
+    onSpeedChange: (Float) -> Unit,
+    onSeekStart: (Float) -> Unit,
+    onSeekEnd: () -> Unit,
+    onPlayPause: () -> Unit,
+    onExitFullscreen: () -> Unit,
+    onExit: () -> Unit,
+    onReaction: (String) -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null
+            ) { onToggleControls() }
+    ) {
+        // Video
+        AndroidView(
+            factory = { ctx ->
+                PlayerView(ctx).apply {
+                    player = exoPlayer
+                    useController = false
+                    layoutParams = FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT
+                    )
+                }
+            },
+            modifier = Modifier.fillMaxSize()
+        )
+
+        // Floating chat messages (left side)
+        FloatingMessageOverlay(
+            messages = floatingMessages,
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(start = 16.dp, bottom = 80.dp)
+        )
+
+        // Reactions overlay (right side)
+        ReactionOverlay(
+            reactions = visibleReactions,
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = 16.dp, bottom = 80.dp)
+        )
+
+        // Controls overlay
+        AnimatedVisibility(
+            visible = showControls,
+            enter = fadeIn(),
+            exit = fadeOut()
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.4f))
+            ) {
+                // Top bar
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(onClick = onExit) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Exit",
+                            tint = Color.White
+                        )
+                    }
+                    Text(
+                        text = "Room: $roomCode",
+                        color = Color.White,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(20.dp))
+                            .background(Color.White.copy(alpha = 0.15f))
+                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.People,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Live", color = Color.White, style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+
+                // Center play/pause
+                IconButton(
+                    onClick = onPlayPause,
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .size(72.dp)
+                        .clip(CircleShape)
+                        .background(Color.White.copy(alpha = 0.2f))
+                ) {
+                    Icon(
+                        when {
+                            isVideoEnded -> Icons.Default.Replay
+                            isPlaying -> Icons.Default.Pause
+                            else -> Icons.Default.PlayArrow
+                        },
+                        contentDescription = when {
+                            isVideoEnded -> "Restart"
+                            isPlaying -> "Pause"
+                            else -> "Play"
+                        },
+                        tint = Color.White,
+                        modifier = Modifier.size(40.dp)
+                    )
+                }
+
+                // Bottom controls
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                ) {
+                    // Progress bar
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = formatTime(if (isUserSeeking) seekPosition else currentPosition),
+                            color = Color.White,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontSize = 12.sp
+                        )
+                        Slider(
+                            value = if (duration > 0) {
+                                (if (isUserSeeking) seekPosition else currentPosition).toFloat() / duration.toFloat()
+                            } else 0f,
+                            onValueChange = { onSeekStart(it) },
+                            onValueChangeFinished = onSeekEnd,
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(horizontal = 8.dp),
+                            colors = SliderDefaults.colors(
+                                thumbColor = MaterialTheme.colorScheme.primary,
+                                activeTrackColor = MaterialTheme.colorScheme.primary,
+                                inactiveTrackColor = Color.White.copy(alpha = 0.3f)
+                            )
+                        )
+                        Text(
+                            text = formatTime(duration),
+                            color = Color.White,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontSize = 12.sp
+                        )
+                    }
+
+                    // Bottom action row
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        // Speed
+                        Box {
+                            IconButton(onClick = onToggleSpeedMenu) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        Icons.Default.Speed,
+                                        contentDescription = "Speed",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("${currentSpeed}x", color = Color.White, style = MaterialTheme.typography.labelSmall)
+                                }
+                            }
+                            DropdownMenu(expanded = showSpeedMenu, onDismissRequest = onDismissSpeedMenu) {
+                                listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f).forEach { speed ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                "${speed}x",
+                                                fontWeight = if (speed == currentSpeed) FontWeight.Bold else FontWeight.Normal
+                                            )
+                                        },
+                                        onClick = { onSpeedChange(speed) }
+                                    )
+                                }
+                            }
+                        }
+
+                        // Reactions button
+                        IconButton(onClick = onToggleReactions) {
+                            Icon(
+                                Icons.Default.Mood,
+                                contentDescription = "Reactions",
+                                tint = Color.White,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+
+                        // Exit fullscreen
+                        IconButton(onClick = onExitFullscreen) {
+                            Icon(
+                                Icons.Default.FullscreenExit,
+                                contentDescription = "Exit Fullscreen",
+                                tint = Color.White
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // Reaction picker (bottom, fullscreen)
+        AnimatedVisibility(
+            visible = showReactions,
+            enter = slideInVertically { it } + fadeIn(),
+            exit = slideOutVertically { it } + fadeOut(),
+            modifier = Modifier.align(Alignment.BottomCenter)
+        ) {
+            ReactionPicker(
+                onReactionSelected = { emoji -> onReaction(emoji) }
+            )
+        }
     }
 }
 

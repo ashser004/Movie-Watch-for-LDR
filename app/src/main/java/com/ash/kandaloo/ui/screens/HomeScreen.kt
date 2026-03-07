@@ -18,6 +18,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -25,6 +27,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Group
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -64,6 +67,8 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.ash.kandaloo.data.RejoinInfo
+import com.ash.kandaloo.service.RoomManager
 import com.ash.kandaloo.ui.theme.GradientEnd
 import com.ash.kandaloo.ui.theme.GradientStart
 import com.google.firebase.auth.FirebaseAuth
@@ -71,16 +76,24 @@ import com.google.firebase.auth.FirebaseAuth
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
+    roomManager: RoomManager,
     onCreateRoom: (Int) -> Unit,
     onJoinRoom: (String) -> Unit,
+    onRejoinRoom: (String) -> Unit,
     onSettings: () -> Unit
 ) {
     val user = FirebaseAuth.getInstance().currentUser
     var showCreateDialog by remember { mutableStateOf(false) }
     var showJoinDialog by remember { mutableStateOf(false) }
     var isVisible by remember { mutableStateOf(false) }
+    var rejoinRooms by remember { mutableStateOf<List<RejoinInfo>>(emptyList()) }
 
-    LaunchedEffect(Unit) { isVisible = true }
+    LaunchedEffect(Unit) {
+        isVisible = true
+        roomManager.getRecentRooms { rooms ->
+            rejoinRooms = rooms
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -90,7 +103,7 @@ fun HomeScreen(
                         Text("🎬", fontSize = 24.sp)
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            "KanDaloo",
+                            "KanDeloo",
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.Bold
                         )
@@ -112,24 +125,21 @@ fun HomeScreen(
         },
         containerColor = MaterialTheme.colorScheme.background
     ) { paddingValues ->
-        Box(
+        LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
+                .padding(horizontal = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(24.dp),
-                verticalArrangement = Arrangement.Center,
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                // Welcome section
+            // Welcome section
+            item {
+                Spacer(modifier = Modifier.height(16.dp))
                 AnimatedVisibility(
                     visible = isVisible,
                     enter = fadeIn(spring()) + slideInVertically(spring()) { -30 }
                 ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
                         // User avatar
                         Box(
                             modifier = Modifier
@@ -156,7 +166,7 @@ fun HomeScreen(
                         Spacer(modifier = Modifier.height(16.dp))
 
                         Text(
-                            text = "Hey, ${user?.displayName?.split(" ")?.firstOrNull() ?: "there"}! 👋",
+                            text = "Hey, ${user?.displayName?.split(" ")?.firstOrNull() ?: "there"}! \uD83D\uDC4B",
                             style = MaterialTheme.typography.headlineMedium,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onBackground
@@ -171,10 +181,90 @@ fun HomeScreen(
                         )
                     }
                 }
+            }
 
-                Spacer(modifier = Modifier.height(48.dp))
+            // Rejoin cards
+            if (rejoinRooms.isNotEmpty()) {
+                item {
+                    Text(
+                        "Rejoin a Party",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                }
+                items(rejoinRooms) { rejoinInfo ->
+                    Card(
+                        onClick = {
+                            roomManager.checkRoomStillActive(rejoinInfo.roomCode) { active ->
+                                if (active) {
+                                    onRejoinRoom(rejoinInfo.roomCode)
+                                } else {
+                                    roomManager.removeRejoinEntry(rejoinInfo.roomCode)
+                                    roomManager.getRecentRooms { rooms ->
+                                        rejoinRooms = rooms
+                                    }
+                                }
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.5f)
+                        ),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(44.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(MaterialTheme.colorScheme.tertiary.copy(alpha = 0.2f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    Icons.Default.Refresh,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.tertiary,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
 
-                // Action Cards
+                            Spacer(modifier = Modifier.width(12.dp))
+
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Room: ${rejoinInfo.roomCode}",
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = "Host: ${rejoinInfo.hostName}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+
+                            Text(
+                                text = "Rejoin",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.tertiary,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Action Cards
+            item {
+                Spacer(modifier = Modifier.height(8.dp))
                 AnimatedVisibility(
                     visible = isVisible,
                     enter = fadeIn(spring(stiffness = Spring.StiffnessLow)) +
@@ -301,6 +391,8 @@ fun HomeScreen(
                     }
                 }
             }
+
+            item { Spacer(modifier = Modifier.height(24.dp)) }
         }
     }
 

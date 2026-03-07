@@ -163,6 +163,7 @@ fun RoomScreen(
     }
 
     DisposableEffect(Unit) {
+        roomManager.sendJoinNotification(roomCode)
         onDispose {
             if (!isHost) {
                 roomManager.leaveRoom(roomCode)
@@ -402,7 +403,8 @@ fun RoomScreen(
                 MemberCard(
                     member = member,
                     isCurrentUser = uid == currentUserId,
-                    isHost = uid == (roomData["hostId"] as? String ?: "")
+                    isHost = uid == (roomData["hostId"] as? String ?: ""),
+                    showMatchStatus = isHost && uid != currentUserId
                 )
             }
 
@@ -467,7 +469,8 @@ fun RoomScreen(
 fun MemberCard(
     member: MemberData,
     isCurrentUser: Boolean,
-    isHost: Boolean
+    isHost: Boolean,
+    showMatchStatus: Boolean = false
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -534,12 +537,18 @@ fun MemberCard(
                     }
                 }
                 Text(
-                    text = if (member.hasMatchingFile) "Ready" else "Waiting for video...",
+                    text = when {
+                        showMatchStatus && member.hasMatchingFile -> "File matches yours ✓"
+                        showMatchStatus && !member.hasMatchingFile -> "${member.displayName}'s file doesn't match yours"
+                        member.hasMatchingFile -> "Ready"
+                        else -> "Waiting for video..."
+                    },
                     style = MaterialTheme.typography.bodySmall,
-                    color = if (member.hasMatchingFile)
-                        MaterialTheme.colorScheme.primary
-                    else
-                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                    color = when {
+                        showMatchStatus && !member.hasMatchingFile -> MaterialTheme.colorScheme.error
+                        member.hasMatchingFile -> MaterialTheme.colorScheme.primary
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                    }
                 )
             }
 
