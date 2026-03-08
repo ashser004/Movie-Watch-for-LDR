@@ -124,5 +124,7 @@ data class ChatMessage(
 data class RejoinInfo(
     val roomCode: String = "",
     val hostName: String = "",
-    val leftAt: Long = 0L
+    val leftAt: Long = 0L,
+    val isHost: Boolean = false,
+    val videoUriString: String = ""
 )

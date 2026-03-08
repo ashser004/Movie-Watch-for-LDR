@@ -20,7 +20,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -343,12 +342,13 @@ fun VideoPlayerScreen(
                 .fillMaxSize()
                 .background(MaterialTheme.colorScheme.background)
         ) {
-            // Video player (16:9 aspect ratio at top)
+            // Video player (35% of screen height with top padding for status bar)
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .aspectRatio(16f / 9f)
+                    .fillMaxHeight(0.35f)
                     .background(Color.Black)
+                    .statusBarsPadding()
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null
@@ -376,23 +376,19 @@ fun VideoPlayerScreen(
                     reactions = visibleReactions.toList(),
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
-                        .padding(end = 8.dp, bottom = 48.dp)
+                        .padding(end = 8.dp, bottom = 8.dp)
                 )
 
-                // Controls overlay
-                AnimatedVisibility(
+                // Controls overlay (without seekbar — seekbar is outside)
+                androidx.compose.animation.AnimatedVisibility(
                     visible = showControls,
                     enter = fadeIn(),
                     exit = fadeOut()
                 ) {
-                    PortraitVideoControls(
+                    PortraitVideoOverlay(
                         roomCode = roomCode,
                         isPlaying = isPlaying,
                         isVideoEnded = isVideoEnded,
-                        isUserSeeking = isUserSeeking,
-                        seekPosition = seekPosition,
-                        currentPosition = currentPosition,
-                        duration = duration,
                         currentSpeed = currentSpeed,
                         showSpeedMenu = showSpeedMenu,
                         showReactions = showReactions,
@@ -404,21 +400,6 @@ fun VideoPlayerScreen(
                             } else {
                                 exoPlayer.playWhenReady = !exoPlayer.playWhenReady
                             }
-                        },
-                        onSeekStart = { fraction ->
-                            isUserSeeking = true
-                            seekPosition = (fraction * duration).toLong()
-                        },
-                        onSeekEnd = {
-                            exoPlayer.seekTo(seekPosition)
-                            isUserSeeking = false
-                            roomManager.updatePlaybackState(roomCode, PlaybackState(
-                                isPlaying = exoPlayer.playWhenReady,
-                                positionMs = seekPosition,
-                                speed = currentSpeed,
-                                lastUpdatedBy = currentUserId,
-                                lastUpdatedAt = System.currentTimeMillis()
-                            ))
                         },
                         onToggleSpeedMenu = { showSpeedMenu = !showSpeedMenu },
                         onDismissSpeedMenu = { showSpeedMenu = false },
@@ -444,7 +425,7 @@ fun VideoPlayerScreen(
                 }
 
                 // Reaction picker (mini, attached to video area)
-                AnimatedVisibility(
+                androidx.compose.animation.AnimatedVisibility(
                     visible = showReactions,
                     enter = slideInVertically { it } + fadeIn(),
                     exit = slideOutVertically { it } + fadeOut(),
@@ -469,7 +450,30 @@ fun VideoPlayerScreen(
                 }
             }
 
-            // Chat section below video
+            // Seekbar outside video frame
+            PortraitSeekBar(
+                isUserSeeking = isUserSeeking,
+                seekPosition = seekPosition,
+                currentPosition = currentPosition,
+                duration = duration,
+                onSeekStart = { fraction ->
+                    isUserSeeking = true
+                    seekPosition = (fraction * duration).toLong()
+                },
+                onSeekEnd = {
+                    exoPlayer.seekTo(seekPosition)
+                    isUserSeeking = false
+                    roomManager.updatePlaybackState(roomCode, PlaybackState(
+                        isPlaying = exoPlayer.playWhenReady,
+                        positionMs = seekPosition,
+                        speed = currentSpeed,
+                        lastUpdatedBy = currentUserId,
+                        lastUpdatedAt = System.currentTimeMillis()
+                    ))
+                }
+            )
+
+            // Chat section below video (65% remaining)
             ChatSection(
                 messages = chatMessages.toList(),
                 currentUserId = currentUserId,
@@ -488,21 +492,11 @@ fun VideoPlayerScreen(
             shape = RoundedCornerShape(24.dp),
             title = { Text("Leave Party?") },
             text = {
-                Text(
-                    if (isHost)
-                        "As the host, leaving will end the party for everyone."
-                    else
-                        "Are you sure you want to leave the watch party?"
-                )
+                Text("Are you sure you want to leave the watch party?")
             },
             confirmButton = {
                 TextButton(onClick = {
                     showExitDialog = false
-                    if (isHost) {
-                        roomManager.endRoom(roomCode)
-                    } else {
-                        roomManager.leaveRoom(roomCode)
-                    }
                     onExit()
                 }) {
                     Text("Leave", color = MaterialTheme.colorScheme.error)
@@ -517,23 +511,17 @@ fun VideoPlayerScreen(
     }
 }
 
-// ─────────── PORTRAIT VIDEO CONTROLS ───────────
+// ─────────── PORTRAIT VIDEO OVERLAY (inside video, no seekbar) ───────────
 
 @Composable
-private fun PortraitVideoControls(
+private fun PortraitVideoOverlay(
     roomCode: String,
     isPlaying: Boolean,
     isVideoEnded: Boolean,
-    isUserSeeking: Boolean,
-    seekPosition: Long,
-    currentPosition: Long,
-    duration: Long,
     currentSpeed: Float,
     showSpeedMenu: Boolean,
     showReactions: Boolean,
     onPlayPause: () -> Unit,
-    onSeekStart: (Float) -> Unit,
-    onSeekEnd: () -> Unit,
     onToggleSpeedMenu: () -> Unit,
     onDismissSpeedMenu: () -> Unit,
     onSpeedChange: (Float) -> Unit,
@@ -550,7 +538,6 @@ private fun PortraitVideoControls(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .statusBarsPadding()
                 .padding(horizontal = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -611,101 +598,111 @@ private fun PortraitVideoControls(
             )
         }
 
-        // Bottom controls
-        Column(
+        // Bottom controls (speed, reactions, fullscreen — no seekbar)
+        Row(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .padding(horizontal = 12.dp, vertical = 4.dp)
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            // Seek bar
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text(
-                    text = formatTime(if (isUserSeeking) seekPosition else currentPosition),
-                    color = Color.White,
-                    style = MaterialTheme.typography.labelSmall,
-                    fontSize = 11.sp
-                )
-                Slider(
-                    value = if (duration > 0) {
-                        (if (isUserSeeking) seekPosition else currentPosition).toFloat() / duration.toFloat()
-                    } else 0f,
-                    onValueChange = { onSeekStart(it) },
-                    onValueChangeFinished = onSeekEnd,
-                    modifier = Modifier
-                        .weight(1f)
-                        .padding(horizontal = 6.dp),
-                    colors = SliderDefaults.colors(
-                        thumbColor = MaterialTheme.colorScheme.primary,
-                        activeTrackColor = MaterialTheme.colorScheme.primary,
-                        inactiveTrackColor = Color.White.copy(alpha = 0.3f)
-                    )
-                )
-                Text(
-                    text = formatTime(duration),
-                    color = Color.White,
-                    style = MaterialTheme.typography.labelSmall,
-                    fontSize = 11.sp
+            // Speed
+            Box {
+                IconButton(onClick = onToggleSpeedMenu) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Default.Speed,
+                            contentDescription = "Speed",
+                            tint = Color.White,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(3.dp))
+                        Text("${currentSpeed}x", color = Color.White, fontSize = 11.sp)
+                    }
+                }
+                DropdownMenu(expanded = showSpeedMenu, onDismissRequest = onDismissSpeedMenu) {
+                    listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f).forEach { speed ->
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    "${speed}x",
+                                    fontWeight = if (speed == currentSpeed) FontWeight.Bold else FontWeight.Normal
+                                )
+                            },
+                            onClick = { onSpeedChange(speed) }
+                        )
+                    }
+                }
+            }
+
+            // Reactions
+            IconButton(onClick = onToggleReactions) {
+                Icon(
+                    Icons.Default.Mood,
+                    contentDescription = "Reactions",
+                    tint = Color.White,
+                    modifier = Modifier.size(22.dp)
                 )
             }
 
-            // Action row
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                // Speed
-                Box {
-                    IconButton(onClick = onToggleSpeedMenu) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                Icons.Default.Speed,
-                                contentDescription = "Speed",
-                                tint = Color.White,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(3.dp))
-                            Text("${currentSpeed}x", color = Color.White, fontSize = 11.sp)
-                        }
-                    }
-                    DropdownMenu(expanded = showSpeedMenu, onDismissRequest = onDismissSpeedMenu) {
-                        listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f).forEach { speed ->
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        "${speed}x",
-                                        fontWeight = if (speed == currentSpeed) FontWeight.Bold else FontWeight.Normal
-                                    )
-                                },
-                                onClick = { onSpeedChange(speed) }
-                            )
-                        }
-                    }
-                }
-
-                // Reactions
-                IconButton(onClick = onToggleReactions) {
-                    Icon(
-                        Icons.Default.Mood,
-                        contentDescription = "Reactions",
-                        tint = Color.White,
-                        modifier = Modifier.size(22.dp)
-                    )
-                }
-
-                // Fullscreen
-                IconButton(onClick = onFullscreen) {
-                    Icon(
-                        Icons.Default.Fullscreen,
-                        contentDescription = "Fullscreen",
-                        tint = Color.White
-                    )
-                }
+            // Fullscreen
+            IconButton(onClick = onFullscreen) {
+                Icon(
+                    Icons.Default.Fullscreen,
+                    contentDescription = "Fullscreen",
+                    tint = Color.White
+                )
             }
         }
+    }
+}
+
+// ─────────── PORTRAIT SEEKBAR (outside video frame) ───────────
+
+@Composable
+private fun PortraitSeekBar(
+    isUserSeeking: Boolean,
+    seekPosition: Long,
+    currentPosition: Long,
+    duration: Long,
+    onSeekStart: (Float) -> Unit,
+    onSeekEnd: () -> Unit
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.background)
+            .padding(horizontal = 12.dp, vertical = 2.dp)
+    ) {
+        Text(
+            text = formatTime(if (isUserSeeking) seekPosition else currentPosition),
+            color = MaterialTheme.colorScheme.onBackground,
+            style = MaterialTheme.typography.labelSmall,
+            fontSize = 11.sp
+        )
+        Slider(
+            value = if (duration > 0) {
+                (if (isUserSeeking) seekPosition else currentPosition).toFloat() / duration.toFloat()
+            } else 0f,
+            onValueChange = { onSeekStart(it) },
+            onValueChangeFinished = onSeekEnd,
+            modifier = Modifier
+                .weight(1f)
+                .padding(horizontal = 4.dp),
+            colors = SliderDefaults.colors(
+                thumbColor = MaterialTheme.colorScheme.primary,
+                activeTrackColor = MaterialTheme.colorScheme.primary,
+                inactiveTrackColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.2f)
+            )
+        )
+        Text(
+            text = formatTime(duration),
+            color = MaterialTheme.colorScheme.onBackground,
+            style = MaterialTheme.typography.labelSmall,
+            fontSize = 11.sp
+        )
     }
 }
 
@@ -861,7 +858,7 @@ private fun FullscreenPlayer(
                 Column(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
-                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                        .padding(horizontal = 24.dp, vertical = 8.dp)
                 ) {
                     // Progress bar
                     Row(
@@ -882,7 +879,7 @@ private fun FullscreenPlayer(
                             onValueChangeFinished = onSeekEnd,
                             modifier = Modifier
                                 .weight(1f)
-                                .padding(horizontal = 8.dp),
+                                .padding(horizontal = 12.dp),
                             colors = SliderDefaults.colors(
                                 thumbColor = MaterialTheme.colorScheme.primary,
                                 activeTrackColor = MaterialTheme.colorScheme.primary,

@@ -82,7 +82,9 @@ fun RoomScreen(
     isHost: Boolean,
     roomManager: RoomManager,
     onBack: () -> Unit,
-    onStartParty: (Uri) -> Unit
+    onStartParty: (Uri) -> Unit,
+    isTransitioningToPlayer: Boolean = false,
+    onTransitionConsumed: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -165,9 +167,12 @@ fun RoomScreen(
     DisposableEffect(Unit) {
         roomManager.sendJoinNotification(roomCode)
         onDispose {
-            if (!isHost) {
+            // Don't send leave/cleanup when transitioning to player screen
+            // The party is starting, not leaving
+            if (!isTransitioningToPlayer) {
                 roomManager.leaveRoom(roomCode)
             }
+            onTransitionConsumed()
         }
     }
 
@@ -181,14 +186,7 @@ fun RoomScreen(
                     )
                 },
                 navigationIcon = {
-                    IconButton(onClick = {
-                        if (isHost) {
-                            roomManager.endRoom(roomCode)
-                        } else {
-                            roomManager.leaveRoom(roomCode)
-                        }
-                        onBack()
-                    }) {
+                    IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
                     }
                 },

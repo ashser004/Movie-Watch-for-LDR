@@ -57,6 +57,8 @@ fun KanDalooApp(
     var currentRoomCode by remember { mutableStateOf("") }
     var isCurrentUserHost by remember { mutableStateOf(false) }
     var selectedVideoUri by remember { mutableStateOf<Uri?>(null) }
+    // Track if we're transitioning to player (to suppress false leave notification)
+    var isTransitioningToPlayer by remember { mutableStateOf(false) }
 
     val startDestination = if (isLoggedIn) "home" else "login"
 
@@ -98,17 +100,57 @@ fun KanDalooApp(
                         onFailure = { /* handled inside */ }
                     )
                 },
-                onRejoinRoom = { roomCode ->
-                    currentRoomCode = roomCode
-                    isCurrentUserHost = false
-                    roomManager.removeRejoinEntry(roomCode)
-                    roomManager.joinRoom(
-                        roomCode = roomCode,
-                        onSuccess = {
-                            navController.navigate("room")
-                        },
-                        onFailure = { /* handled inside */ }
-                    )
+                onRejoinRoom = { rejoinInfo ->
+                    currentRoomCode = rejoinInfo.roomCode
+                    isCurrentUserHost = rejoinInfo.isHost
+
+                    if (rejoinInfo.videoUriString.isNotEmpty()) {
+                        // We have video URI stored — try to rejoin directly
+                        val videoUri = try { Uri.parse(rejoinInfo.videoUriString) } catch (_: Exception) { null }
+                        if (videoUri != null) {
+                            roomManager.rejoinPlayingRoom(
+                                roomCode = rejoinInfo.roomCode,
+                                onSuccess = { status ->
+                                    selectedVideoUri = videoUri
+                                    roomManager.sendJoinNotification(rejoinInfo.roomCode)
+                                    if (status == "playing") {
+                                        // Go directly to player
+                                        navController.navigate("player") {
+                                            popUpTo("home") { inclusive = false }
+                                        }
+                                    } else {
+                                        // Room is in waiting state, go to room screen
+                                        navController.navigate("room")
+                                    }
+                                },
+                                onFailure = {
+                                    // Fallback to normal join flow
+                                    roomManager.removeRejoinEntry(rejoinInfo.roomCode)
+                                    roomManager.joinRoom(
+                                        roomCode = rejoinInfo.roomCode,
+                                        onSuccess = { navController.navigate("room") },
+                                        onFailure = { /* handled */ }
+                                    )
+                                }
+                            )
+                        } else {
+                            // Invalid URI, fall back
+                            roomManager.removeRejoinEntry(rejoinInfo.roomCode)
+                            roomManager.joinRoom(
+                                roomCode = rejoinInfo.roomCode,
+                                onSuccess = { navController.navigate("room") },
+                                onFailure = { /* handled */ }
+                            )
+                        }
+                    } else {
+                        // No stored video URI — normal rejoin through room screen
+                        roomManager.removeRejoinEntry(rejoinInfo.roomCode)
+                        roomManager.joinRoom(
+                            roomCode = rejoinInfo.roomCode,
+                            onSuccess = { navController.navigate("room") },
+                            onFailure = { /* handled */ }
+                        )
+                    }
                 },
                 onSettings = {
                     navController.navigate("settings")
@@ -122,14 +164,19 @@ fun KanDalooApp(
                 isHost = isCurrentUserHost,
                 roomManager = roomManager,
                 onBack = {
+                    // Both host and member use leaveRoom when leaving room screen
+                    roomManager.leaveRoom(currentRoomCode)
                     navController.popBackStack()
                 },
                 onStartParty = { uri ->
                     selectedVideoUri = uri
+                    isTransitioningToPlayer = true
                     navController.navigate("player") {
                         popUpTo("room") { inclusive = true }
                     }
-                }
+                },
+                isTransitioningToPlayer = isTransitioningToPlayer,
+                onTransitionConsumed = { isTransitioningToPlayer = false }
             )
         }
 
@@ -141,6 +188,8 @@ fun KanDalooApp(
                     roomManager = roomManager,
                     isHost = isCurrentUserHost,
                     onExit = {
+                        // Both host and member: leaveRoom (which handles cleanup)
+                        roomManager.leaveRoom(currentRoomCode, uri.toString())
                         navController.navigate("home") {
                             popUpTo("home") { inclusive = true }
                         }

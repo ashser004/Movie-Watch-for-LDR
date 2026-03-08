@@ -79,7 +79,7 @@ fun HomeScreen(
     roomManager: RoomManager,
     onCreateRoom: (Int) -> Unit,
     onJoinRoom: (String) -> Unit,
-    onRejoinRoom: (String) -> Unit,
+    onRejoinRoom: (RejoinInfo) -> Unit,
     onSettings: () -> Unit
 ) {
     val user = FirebaseAuth.getInstance().currentUser
@@ -196,16 +196,7 @@ fun HomeScreen(
                 items(rejoinRooms) { rejoinInfo ->
                     Card(
                         onClick = {
-                            roomManager.checkRoomStillActive(rejoinInfo.roomCode) { active ->
-                                if (active) {
-                                    onRejoinRoom(rejoinInfo.roomCode)
-                                } else {
-                                    roomManager.removeRejoinEntry(rejoinInfo.roomCode)
-                                    roomManager.getRecentRooms { rooms ->
-                                        rejoinRooms = rooms
-                                    }
-                                }
-                            }
+                            onRejoinRoom(rejoinInfo)
                         },
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(16.dp),

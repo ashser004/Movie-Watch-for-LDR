@@ -70,9 +70,8 @@ fun ChatSection(
         modifier = modifier
             .fillMaxSize()
             .navigationBarsPadding()
-            .imePadding()
     ) {
-        // Messages list
+        // Messages list (scrollable, takes remaining space)
         LazyColumn(
             modifier = Modifier
                 .weight(1f)
@@ -91,10 +90,11 @@ fun ChatSection(
             item { Spacer(modifier = Modifier.height(4.dp)) }
         }
 
-        // Message input
+        // Message input — only this moves up with keyboard
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .imePadding()
                 .padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -215,7 +215,7 @@ fun ChatBubble(
 
             Box(
                 modifier = Modifier
-                    .widthIn(max = 260.dp)
+                    .widthIn(max = 280.dp)
                     .clip(
                         RoundedCornerShape(
                             topStart = 16.dp,
@@ -230,7 +230,7 @@ fun ChatBubble(
                         else
                             MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)
                     )
-                    .padding(horizontal = 12.dp, vertical = 8.dp)
+                    .padding(horizontal = 14.dp, vertical = 9.dp)
             ) {
                 Text(
                     text = message.message,

@@ -219,7 +219,7 @@ class RoomManager {
         awaitClose { roomsRef.child(roomCode).child("reactions").removeEventListener(listener) }
     }
 
-    fun leaveRoom(roomCode: String) {
+    fun leaveRoom(roomCode: String, videoUriString: String = "") {
         val user = currentUser ?: return
         // Remove member from room
         roomsRef.child(roomCode).child("members").child(user.uid).removeValue()
@@ -230,23 +230,32 @@ class RoomManager {
         // Save rejoin info under user's node
         roomsRef.child(roomCode).get().addOnSuccessListener { snapshot ->
             val hostName = snapshot.child("hostName").value as? String ?: ""
+            val hostId = snapshot.child("hostId").value as? String ?: ""
             val membersCount = snapshot.child("members").childrenCount.toInt()
             val status = snapshot.child("status").value as? String ?: "waiting"
+            val isHost = user.uid == hostId
 
-            if (membersCount == 0 || status == "ended") {
-                // Last person left — clean up room
+            if (membersCount == 0) {
+                // Last person left — mark room as ended and clean up
                 roomsRef.child(roomCode).child("status").setValue("ended")
-                // Remove rejoin entry
+                // Remove rejoin entry for this user
+                usersRef.child(user.uid).child("recentRooms").child(roomCode).removeValue()
+                // Also clean up any other users' rejoin entries for this room
+                cleanupRejoinEntriesForRoom(roomCode)
+            } else if (status == "ended") {
                 usersRef.child(user.uid).child("recentRooms").child(roomCode).removeValue()
             } else {
                 // Room still active — save rejoin info
-                usersRef.child(user.uid).child("recentRooms").child(roomCode).setValue(
-                    mapOf(
-                        "roomCode" to roomCode,
-                        "hostName" to hostName,
-                        "leftAt" to ServerValue.TIMESTAMP
-                    )
+                val rejoinData = mutableMapOf<String, Any>(
+                    "roomCode" to roomCode,
+                    "hostName" to hostName,
+                    "leftAt" to ServerValue.TIMESTAMP,
+                    "isHost" to isHost
                 )
+                if (videoUriString.isNotEmpty()) {
+                    rejoinData["videoUriString"] = videoUriString
+                }
+                usersRef.child(user.uid).child("recentRooms").child(roomCode).setValue(rejoinData)
             }
         }
     }
@@ -254,6 +263,12 @@ class RoomManager {
     fun endRoom(roomCode: String) {
         roomsRef.child(roomCode).child("status").setValue("ended")
         // Clean up all users' rejoin entries for this room
+        cleanupRejoinEntriesForRoom(roomCode)
+    }
+
+    private fun cleanupRejoinEntriesForRoom(roomCode: String) {
+        // Scan all users and remove rejoin entries for this room
+        // We also need to check the members who left before
         roomsRef.child(roomCode).child("members").get().addOnSuccessListener { snapshot ->
             snapshot.children.forEach { child ->
                 val uid = child.key ?: return@forEach
@@ -314,16 +329,43 @@ class RoomManager {
         val user = currentUser ?: run { onResult(emptyList()); return }
         usersRef.child(user.uid).child("recentRooms").get().addOnSuccessListener { snapshot ->
             val rooms = mutableListOf<RejoinInfo>()
+            val roomCodes = mutableListOf<String>()
             snapshot.children.forEach { child ->
                 val roomCode = child.child("roomCode").value as? String ?: return@forEach
                 val hostName = child.child("hostName").value as? String ?: ""
                 val leftAt = (child.child("leftAt").value as? Long)
                     ?: (child.child("leftAt").value as? Number)?.toLong() ?: 0L
-                rooms.add(RejoinInfo(roomCode, hostName, leftAt))
+                val isHost = child.child("isHost").value as? Boolean ?: false
+                val videoUriString = child.child("videoUriString").value as? String ?: ""
+                rooms.add(RejoinInfo(roomCode, hostName, leftAt, isHost, videoUriString))
+                roomCodes.add(roomCode)
             }
             // Sort by latest left first
             rooms.sortByDescending { it.leftAt }
-            onResult(rooms)
+
+            // Validate rooms still exist and are not ended
+            if (rooms.isEmpty()) {
+                onResult(emptyList())
+                return@addOnSuccessListener
+            }
+
+            val validRooms = mutableListOf<RejoinInfo>()
+            var checkedCount = 0
+            rooms.forEach { info ->
+                checkRoomStillActive(info.roomCode) { active ->
+                    if (active) {
+                        validRooms.add(info)
+                    } else {
+                        // Clean up stale rejoin entry
+                        removeRejoinEntry(info.roomCode)
+                    }
+                    checkedCount++
+                    if (checkedCount == rooms.size) {
+                        validRooms.sortByDescending { it.leftAt }
+                        onResult(validRooms)
+                    }
+                }
+            }
         }.addOnFailureListener {
             onResult(emptyList())
         }
@@ -347,5 +389,53 @@ class RoomManager {
     fun sendJoinNotification(roomCode: String) {
         val user = currentUser ?: return
         sendSystemMessage(roomCode, "${user.displayName ?: "Someone"} joined the room", "join")
+    }
+
+    fun rejoinPlayingRoom(
+        roomCode: String,
+        onSuccess: (String) -> Unit, // returns room status
+        onFailure: (String) -> Unit
+    ) {
+        val user = currentUser ?: run { onFailure("Not logged in"); return }
+
+        roomsRef.child(roomCode).get().addOnSuccessListener { snapshot ->
+            if (!snapshot.exists()) {
+                onFailure("Room not found")
+                return@addOnSuccessListener
+            }
+
+            val status = snapshot.child("status").value as? String ?: "waiting"
+            if (status == "ended") {
+                onFailure("Room has ended")
+                return@addOnSuccessListener
+            }
+
+            val maxMembers = (snapshot.child("maxMembers").value as? Long)?.toInt() ?: 2
+            val currentMembers = snapshot.child("members").childrenCount.toInt()
+
+            if (currentMembers >= maxMembers) {
+                onFailure("Room is full")
+                return@addOnSuccessListener
+            }
+
+            val memberData = mapOf(
+                "uid" to user.uid,
+                "displayName" to (user.displayName ?: "Member"),
+                "photoUrl" to (user.photoUrl?.toString() ?: ""),
+                "isReady" to true,
+                "hasMatchingFile" to true
+            )
+
+            roomsRef.child(roomCode).child("members").child(user.uid)
+                .setValue(memberData)
+                .addOnSuccessListener {
+                    // Remove rejoin entry
+                    removeRejoinEntry(roomCode)
+                    onSuccess(status)
+                }
+                .addOnFailureListener { onFailure(it.message ?: "Failed to rejoin room") }
+        }.addOnFailureListener {
+            onFailure(it.message ?: "Failed to check room")
+        }
     }
 }
