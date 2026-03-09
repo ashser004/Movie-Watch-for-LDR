@@ -56,6 +56,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -173,12 +174,16 @@ fun RoomScreen(
         }
     }
 
+    // Use rememberUpdatedState so DisposableEffect always reads the latest value
+    val currentIsTransitioning by rememberUpdatedState(isTransitioningToPlayer)
+    val currentVideoUri by rememberUpdatedState(videoUri)
+
     DisposableEffect(Unit) {
         onDispose {
             // Don't send leave/cleanup when transitioning to player screen
             // The party is starting, not leaving
-            if (!isTransitioningToPlayer) {
-                roomManager.leaveRoom(roomCode)
+            if (!currentIsTransitioning) {
+                roomManager.leaveRoom(roomCode, currentVideoUri?.toString() ?: "")
             }
             onTransitionConsumed()
         }

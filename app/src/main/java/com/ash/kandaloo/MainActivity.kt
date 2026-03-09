@@ -5,12 +5,16 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -51,6 +55,7 @@ fun KanDalooApp(
     roomManager: RoomManager
 ) {
     val navController = rememberNavController()
+    val context = LocalContext.current
     val isLoggedIn = FirebaseAuth.getInstance().currentUser != null
 
     // Shared state for room navigation
@@ -59,6 +64,31 @@ fun KanDalooApp(
     var selectedVideoUri by remember { mutableStateOf<Uri?>(null) }
     // Track if we're transitioning to player (to suppress false leave notification)
     var isTransitioningToPlayer by remember { mutableStateOf(false) }
+    // Dialog state for file not found during rejoin
+    var showFileNotFoundDialog by remember { mutableStateOf(false) }
+
+    // Check if a content URI is still accessible
+    fun isUriAccessible(uri: Uri): Boolean {
+        return try {
+            context.contentResolver.openInputStream(uri)?.use { true } ?: false
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    // File not found dialog
+    if (showFileNotFoundDialog) {
+        AlertDialog(
+            onDismissRequest = { showFileNotFoundDialog = false },
+            title = { Text("Cannot Rejoin") },
+            text = { Text("The video file has been deleted or moved from its previous location. You can no longer rejoin this party.") },
+            confirmButton = {
+                TextButton(onClick = { showFileNotFoundDialog = false }) {
+                    Text("OK")
+                }
+            }
+        )
+    }
 
     val startDestination = if (isLoggedIn) "home" else "login"
 
@@ -99,41 +129,31 @@ fun KanDalooApp(
                     isCurrentUserHost = rejoinInfo.isHost
 
                     if (rejoinInfo.videoUriString.isNotEmpty()) {
-                        // We have video URI stored — try to rejoin directly
+                        // We have video URI stored — check if file is still accessible
                         val videoUri = try { Uri.parse(rejoinInfo.videoUriString) } catch (_: Exception) { null }
-                        if (videoUri != null) {
+                        if (videoUri != null && isUriAccessible(videoUri)) {
+                            // File is accessible — rejoin directly
                             roomManager.rejoinPlayingRoom(
                                 roomCode = rejoinInfo.roomCode,
                                 onSuccess = { status ->
                                     selectedVideoUri = videoUri
                                     if (status == "playing") {
-                                        // Go directly to player
                                         navController.navigate("player") {
                                             popUpTo("home") { inclusive = false }
                                         }
                                     } else {
-                                        // Room is in waiting state, go to room screen
                                         navController.navigate("room")
                                     }
                                 },
                                 onFailure = {
-                                    // Fallback to normal join flow
                                     roomManager.removeRejoinEntry(rejoinInfo.roomCode)
-                                    roomManager.joinRoom(
-                                        roomCode = rejoinInfo.roomCode,
-                                        onSuccess = { navController.navigate("room") },
-                                        onFailure = { /* handled */ }
-                                    )
+                                    showFileNotFoundDialog = true
                                 }
                             )
                         } else {
-                            // Invalid URI, fall back
+                            // File not accessible or URI invalid — show error
                             roomManager.removeRejoinEntry(rejoinInfo.roomCode)
-                            roomManager.joinRoom(
-                                roomCode = rejoinInfo.roomCode,
-                                onSuccess = { navController.navigate("room") },
-                                onFailure = { /* handled */ }
-                            )
+                            showFileNotFoundDialog = true
                         }
                     } else {
                         // No stored video URI — normal rejoin through room screen
@@ -158,8 +178,7 @@ fun KanDalooApp(
                 roomManager = roomManager,
                 preferencesManager = preferencesManager,
                 onBack = {
-                    // Both host and member use leaveRoom when leaving room screen
-                    roomManager.leaveRoom(currentRoomCode)
+                    // leaveRoom is handled by RoomScreen's DisposableEffect
                     navController.popBackStack()
                 },
                 onStartParty = { uri ->

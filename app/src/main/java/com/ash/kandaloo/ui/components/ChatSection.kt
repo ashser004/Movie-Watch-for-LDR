@@ -178,7 +178,7 @@ fun ChatBubble(
     message: ChatMessage,
     isCurrentUser: Boolean
 ) {
-    val isSystem = message.type == "join" || message.type == "leave"
+    val isSystem = message.type == "join" || message.type == "leave" || message.type == "system"
 
     if (isSystem) {
         // System message (join/leave notifications)

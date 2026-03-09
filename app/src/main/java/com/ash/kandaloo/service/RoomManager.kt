@@ -140,6 +140,10 @@ class RoomManager {
     }
 
     fun startParty(roomCode: String, autoPlay: Boolean = true) {
+        // Clear old chat and reactions from the waiting-room phase
+        roomsRef.child(roomCode).child("chat").removeValue()
+        roomsRef.child(roomCode).child("reactions").removeValue()
+
         roomsRef.child(roomCode).child("status").setValue("playing")
         updatePlaybackState(roomCode, PlaybackState(
             isPlaying = autoPlay,
