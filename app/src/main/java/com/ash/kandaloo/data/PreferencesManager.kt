@@ -23,7 +23,7 @@ class PreferencesManager(private val context: Context) {
     }
 
     val isAutoPlay: Flow<Boolean> = context.dataStore.data.map { prefs ->
-        prefs[AUTO_PLAY] ?: true
+        prefs[AUTO_PLAY] ?: false
     }
 
     suspend fun setDarkTheme(enabled: Boolean) {

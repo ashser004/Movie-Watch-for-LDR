@@ -92,13 +92,7 @@ fun KanDalooApp(
                 onJoinRoom = { roomCode ->
                     currentRoomCode = roomCode
                     isCurrentUserHost = false
-                    roomManager.joinRoom(
-                        roomCode = roomCode,
-                        onSuccess = {
-                            navController.navigate("room")
-                        },
-                        onFailure = { /* handled inside */ }
-                    )
+                    navController.navigate("room")
                 },
                 onRejoinRoom = { rejoinInfo ->
                     currentRoomCode = rejoinInfo.roomCode
@@ -112,7 +106,6 @@ fun KanDalooApp(
                                 roomCode = rejoinInfo.roomCode,
                                 onSuccess = { status ->
                                     selectedVideoUri = videoUri
-                                    roomManager.sendJoinNotification(rejoinInfo.roomCode)
                                     if (status == "playing") {
                                         // Go directly to player
                                         navController.navigate("player") {
@@ -163,6 +156,7 @@ fun KanDalooApp(
                 roomCode = currentRoomCode,
                 isHost = isCurrentUserHost,
                 roomManager = roomManager,
+                preferencesManager = preferencesManager,
                 onBack = {
                     // Both host and member use leaveRoom when leaving room screen
                     roomManager.leaveRoom(currentRoomCode)

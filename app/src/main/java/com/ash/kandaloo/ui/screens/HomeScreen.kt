@@ -34,6 +34,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -401,8 +402,9 @@ fun HomeScreen(
     // Join Room Dialog
     if (showJoinDialog) {
         JoinRoomDialog(
+            roomManager = roomManager,
             onDismiss = { showJoinDialog = false },
-            onJoin = { code ->
+            onJoinSuccess = { code ->
                 showJoinDialog = false
                 onJoinRoom(code)
             }
@@ -490,14 +492,35 @@ fun CreateRoomDialog(
 
 @Composable
 fun JoinRoomDialog(
+    roomManager: RoomManager,
     onDismiss: () -> Unit,
-    onJoin: (String) -> Unit
+    onJoinSuccess: (String) -> Unit
 ) {
     var roomCode by remember { mutableStateOf("") }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+    var isLoading by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
 
+    fun attemptJoin() {
+        if (roomCode.length != 6 || isLoading) return
+        focusManager.clearFocus()
+        isLoading = true
+        errorMessage = null
+        roomManager.joinRoom(
+            roomCode = roomCode,
+            onSuccess = {
+                isLoading = false
+                onJoinSuccess(roomCode)
+            },
+            onFailure = { error ->
+                isLoading = false
+                errorMessage = error
+            }
+        )
+    }
+
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!isLoading) onDismiss() },
         shape = RoundedCornerShape(24.dp),
         containerColor = MaterialTheme.colorScheme.surface,
         title = {
@@ -519,43 +542,57 @@ fun JoinRoomDialog(
 
                 OutlinedTextField(
                     value = roomCode,
-                    onValueChange = { roomCode = it.uppercase().take(6) },
+                    onValueChange = {
+                        roomCode = it.uppercase().take(6)
+                        errorMessage = null
+                    },
                     label = { Text("Room Code") },
                     placeholder = { Text("e.g. ABC123") },
                     singleLine = true,
+                    enabled = !isLoading,
+                    isError = errorMessage != null,
+                    supportingText = if (errorMessage != null) {
+                        { Text(errorMessage!!, color = MaterialTheme.colorScheme.error) }
+                    } else null,
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp),
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedBorderColor = MaterialTheme.colorScheme.primary,
-                        unfocusedBorderColor = MaterialTheme.colorScheme.outline
+                        unfocusedBorderColor = MaterialTheme.colorScheme.outline,
+                        errorBorderColor = MaterialTheme.colorScheme.error
                     ),
                     keyboardOptions = KeyboardOptions(
                         capitalization = KeyboardCapitalization.Characters,
                         imeAction = ImeAction.Done
                     ),
                     keyboardActions = KeyboardActions(
-                        onDone = {
-                            focusManager.clearFocus()
-                            if (roomCode.length == 6) onJoin(roomCode)
-                        }
+                        onDone = { attemptJoin() }
                     )
                 )
             }
         },
         confirmButton = {
             Button(
-                onClick = { onJoin(roomCode) },
-                enabled = roomCode.length == 6,
+                onClick = { attemptJoin() },
+                enabled = roomCode.length == 6 && !isLoading,
                 shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = MaterialTheme.colorScheme.secondary
                 )
             ) {
-                Text("Join")
+                if (isLoading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onSecondary
+                    )
+                } else {
+                    Text("Join")
+                }
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
+            TextButton(onClick = onDismiss, enabled = !isLoading) {
                 Text("Cancel")
             }
         }

@@ -97,7 +97,10 @@ class RoomManager {
 
             roomsRef.child(roomCode).child("members").child(user.uid)
                 .setValue(memberData)
-                .addOnSuccessListener { onSuccess() }
+                .addOnSuccessListener {
+                    sendJoinNotification(roomCode)
+                    onSuccess()
+                }
                 .addOnFailureListener { onFailure(it.message ?: "Failed to join room") }
         }.addOnFailureListener {
             onFailure(it.message ?: "Failed to check room")
@@ -136,15 +139,22 @@ class RoomManager {
             .child("isReady").setValue(ready)
     }
 
-    fun startParty(roomCode: String) {
+    fun startParty(roomCode: String, autoPlay: Boolean = true) {
         roomsRef.child(roomCode).child("status").setValue("playing")
         updatePlaybackState(roomCode, PlaybackState(
-            isPlaying = true,
+            isPlaying = autoPlay,
             positionMs = 0L,
             speed = 1.0f,
             lastUpdatedBy = currentUser?.uid ?: "",
             lastUpdatedAt = System.currentTimeMillis()
         ))
+    }
+
+    fun setMemberAutoPlay(roomCode: String, autoPlay: Boolean) {
+        val user = currentUser ?: return
+        roomsRef.child(roomCode)
+            .child("members").child(user.uid)
+            .child("autoPlay").setValue(autoPlay)
     }
 
     fun updatePlaybackState(roomCode: String, state: PlaybackState) {
@@ -221,13 +231,8 @@ class RoomManager {
 
     fun leaveRoom(roomCode: String, videoUriString: String = "") {
         val user = currentUser ?: return
-        // Remove member from room
-        roomsRef.child(roomCode).child("members").child(user.uid).removeValue()
 
-        // Send leave notification as a chat message
-        sendSystemMessage(roomCode, "${user.displayName ?: "Someone"} left the room", "leave")
-
-        // Save rejoin info under user's node
+        // Read room state BEFORE removing ourselves to avoid race condition
         roomsRef.child(roomCode).get().addOnSuccessListener { snapshot ->
             val hostName = snapshot.child("hostName").value as? String ?: ""
             val hostId = snapshot.child("hostId").value as? String ?: ""
@@ -235,12 +240,17 @@ class RoomManager {
             val status = snapshot.child("status").value as? String ?: "waiting"
             val isHost = user.uid == hostId
 
-            if (membersCount == 0) {
+            // Now remove ourselves
+            roomsRef.child(roomCode).child("members").child(user.uid).removeValue()
+            sendSystemMessage(roomCode, "${user.displayName ?: "Someone"} left the room", "leave")
+
+            // Remaining members = count - 1 (since we counted ourselves)
+            val remainingMembers = membersCount - 1
+
+            if (remainingMembers <= 0) {
                 // Last person left — mark room as ended and clean up
                 roomsRef.child(roomCode).child("status").setValue("ended")
-                // Remove rejoin entry for this user
                 usersRef.child(user.uid).child("recentRooms").child(roomCode).removeValue()
-                // Also clean up any other users' rejoin entries for this room
                 cleanupRejoinEntriesForRoom(roomCode)
             } else if (status == "ended") {
                 usersRef.child(user.uid).child("recentRooms").child(roomCode).removeValue()
@@ -431,6 +441,7 @@ class RoomManager {
                 .addOnSuccessListener {
                     // Remove rejoin entry
                     removeRejoinEntry(roomCode)
+                    sendJoinNotification(roomCode)
                     onSuccess(status)
                 }
                 .addOnFailureListener { onFailure(it.message ?: "Failed to rejoin room") }

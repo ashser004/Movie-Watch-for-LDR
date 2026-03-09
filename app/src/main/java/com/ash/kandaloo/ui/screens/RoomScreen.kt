@@ -69,6 +69,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ash.kandaloo.data.MemberData
+import com.ash.kandaloo.data.PreferencesManager
 import com.ash.kandaloo.data.VideoMetadata
 import com.ash.kandaloo.service.RoomManager
 import com.ash.kandaloo.service.VideoMetadataExtractor
@@ -81,6 +82,7 @@ fun RoomScreen(
     roomCode: String,
     isHost: Boolean,
     roomManager: RoomManager,
+    preferencesManager: PreferencesManager,
     onBack: () -> Unit,
     onStartParty: (Uri) -> Unit,
     isTransitioningToPlayer: Boolean = false,
@@ -103,6 +105,12 @@ fun RoomScreen(
     val roomDataFlow = remember { roomManager.observeRoom(roomCode) }
     val roomData by roomDataFlow.collectAsState(initial = emptyMap())
 
+    // Observe local autoplay preference and sync to Firebase
+    val localAutoPlay by preferencesManager.isAutoPlay.collectAsState(initial = false)
+    LaunchedEffect(localAutoPlay) {
+        roomManager.setMemberAutoPlay(roomCode, localAutoPlay)
+    }
+
     // Parse room data
     LaunchedEffect(roomData) {
         if (roomData.isEmpty()) return@LaunchedEffect
@@ -117,7 +125,8 @@ fun RoomScreen(
                 displayName = v["displayName"] as? String ?: "",
                 photoUrl = v["photoUrl"] as? String ?: "",
                 isReady = v["isReady"] as? Boolean ?: false,
-                hasMatchingFile = v["hasMatchingFile"] as? Boolean ?: false
+                hasMatchingFile = v["hasMatchingFile"] as? Boolean ?: false,
+                autoPlay = v["autoPlay"] as? Boolean ?: false
             )
         }
 
@@ -165,7 +174,6 @@ fun RoomScreen(
     }
 
     DisposableEffect(Unit) {
-        roomManager.sendJoinNotification(roomCode)
         onDispose {
             // Don't send leave/cleanup when transitioning to player screen
             // The party is starting, not leaving
@@ -413,11 +421,22 @@ fun RoomScreen(
                     Button(
                         onClick = {
                             if (videoUri != null) {
-                                roomManager.startParty(roomCode)
+                                val allAutoPlay = members.values.all { it.autoPlay }
+                                roomManager.startParty(roomCode, allAutoPlay)
+                                if (!allAutoPlay) {
+                                    roomManager.sendSystemMessage(
+                                        roomCode,
+                                        "Auto-play is off — not all members have it enabled",
+                                        "system"
+                                    )
+                                    scope.launch {
+                                        snackbarHostState.showSnackbar("Not all members have auto-play enabled")
+                                    }
+                                }
                                 onStartParty(videoUri!!)
                             }
                         },
-                        enabled = allReady && videoUri != null && members.size >= 2,
+                        enabled = allReady && videoUri != null,
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(56.dp),
@@ -439,16 +458,6 @@ fun RoomScreen(
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
                             "Waiting for all members to select a matching video...",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    }
-                    if (members.size < 2) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            "Waiting for at least one more member to join...",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
                             textAlign = TextAlign.Center,

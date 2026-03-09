@@ -57,6 +57,7 @@ data class MemberData(
     val photoUrl: String = "",
     val isReady: Boolean = false,
     val hasMatchingFile: Boolean = false,
+    val autoPlay: Boolean = false,
     val videoMetadata: VideoMetadata? = null
 )
 

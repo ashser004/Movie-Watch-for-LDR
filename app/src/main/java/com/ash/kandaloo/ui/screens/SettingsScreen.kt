@@ -63,7 +63,7 @@ fun SettingsScreen(
     val scope = rememberCoroutineScope()
     val user = FirebaseAuth.getInstance().currentUser
     val isDarkTheme by preferencesManager.isDarkTheme.collectAsState(initial = true)
-    val isAutoPlay by preferencesManager.isAutoPlay.collectAsState(initial = true)
+    val isAutoPlay by preferencesManager.isAutoPlay.collectAsState(initial = false)
     var showLogoutDialog by remember { mutableStateOf(false) }
 
     Scaffold(
