@@ -1,9 +1,11 @@
 package com.ash.kandaloo.ui.screens
 
 import android.app.Activity
+import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.net.Uri
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.FrameLayout
 import androidx.activity.compose.BackHandler
 import androidx.annotation.OptIn
@@ -81,6 +83,7 @@ import androidx.media3.ui.PlayerView
 import com.ash.kandaloo.data.ChatMessage
 import com.ash.kandaloo.data.PlaybackState
 import com.ash.kandaloo.data.ReactionEvent
+import com.ash.kandaloo.service.PlaybackService
 import com.ash.kandaloo.service.RoomManager
 import com.ash.kandaloo.ui.components.ChatSection
 import com.ash.kandaloo.ui.components.FloatingMessageOverlay
@@ -130,6 +133,28 @@ fun VideoPlayerScreen(
                 prepare()
                 playWhenReady = false
             }
+    }
+
+    // Keep screen on while watching
+    DisposableEffect(Unit) {
+        activity?.window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        onDispose {
+            activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
+
+    // Start heartbeat and PlaybackService
+    DisposableEffect(exoPlayer) {
+        roomManager.startHeartbeat(roomCode)
+        // Start media session service for notification + background play + bluetooth
+        PlaybackService.setPlayer(exoPlayer)
+        val serviceIntent = Intent(context, PlaybackService::class.java)
+        context.startService(serviceIntent)
+        onDispose {
+            roomManager.stopHeartbeat()
+            PlaybackService.setPlayer(null)
+            context.stopService(Intent(context, PlaybackService::class.java))
+        }
     }
 
     // Handle orientation based on fullscreen state

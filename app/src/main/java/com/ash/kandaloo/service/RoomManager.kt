@@ -16,6 +16,11 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlin.random.Random
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 class RoomManager {
 
@@ -446,11 +451,101 @@ class RoomManager {
                     // Remove rejoin entry
                     removeRejoinEntry(roomCode)
                     sendJoinNotification(roomCode)
+                    // Pause all members for sync when someone rejoins a playing room
+                    if (status == "playing") {
+                        pauseForSync(roomCode, user.displayName ?: "Someone")
+                    }
                     onSuccess(status)
                 }
                 .addOnFailureListener { onFailure(it.message ?: "Failed to rejoin room") }
         }.addOnFailureListener {
             onFailure(it.message ?: "Failed to check room")
+        }
+    }
+
+    // ─── Heartbeat / Presence System ───
+
+    private var heartbeatJob: Job? = null
+    private var presenceListenerJob: Job? = null
+    private val heartbeatScope = CoroutineScope(Dispatchers.IO)
+
+    companion object {
+        const val HEARTBEAT_INTERVAL_MS = 4000L
+        const val OFFLINE_THRESHOLD_MS = 10000L
+    }
+
+    fun startHeartbeat(roomCode: String) {
+        stopHeartbeat()
+        val user = currentUser ?: return
+        heartbeatJob = heartbeatScope.launch {
+            while (true) {
+                roomsRef.child(roomCode).child("members").child(user.uid)
+                    .child("lastSeen").setValue(ServerValue.TIMESTAMP)
+                delay(HEARTBEAT_INTERVAL_MS)
+            }
+        }
+    }
+
+    fun stopHeartbeat() {
+        heartbeatJob?.cancel()
+        heartbeatJob = null
+    }
+
+    fun observePresence(roomCode: String, onMemberOffline: (String, String) -> Unit, onAllOffline: () -> Unit): Flow<Map<String, Long>> = callbackFlow {
+        val listener = object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                val now = System.currentTimeMillis()
+                val presenceMap = mutableMapOf<String, Long>()
+                val currentUid = currentUser?.uid ?: ""
+                var allOffline = true
+                var memberCount = 0
+
+                snapshot.children.forEach { child ->
+                    val uid = child.key ?: return@forEach
+                    val lastSeen = (child.child("lastSeen").value as? Long)
+                        ?: (child.child("lastSeen").value as? Number)?.toLong() ?: 0L
+                    val displayName = child.child("displayName").value as? String ?: "Someone"
+                    presenceMap[uid] = lastSeen
+                    memberCount++
+
+                    if (lastSeen > 0 && (now - lastSeen) < OFFLINE_THRESHOLD_MS) {
+                        allOffline = false
+                    } else if (uid != currentUid && lastSeen > 0 && (now - lastSeen) >= OFFLINE_THRESHOLD_MS) {
+                        onMemberOffline(uid, displayName)
+                    }
+                }
+
+                if (memberCount > 0 && allOffline) {
+                    onAllOffline()
+                }
+
+                trySend(presenceMap)
+            }
+
+            override fun onCancelled(error: DatabaseError) {
+                close(error.toException())
+            }
+        }
+        roomsRef.child(roomCode).child("members").addValueEventListener(listener)
+        awaitClose { roomsRef.child(roomCode).child("members").removeEventListener(listener) }
+    }
+
+    // Pause all members for sync (used on rejoin)
+    fun pauseForSync(roomCode: String, displayName: String) {
+        roomsRef.child(roomCode).child("playbackState").get().addOnSuccessListener { snapshot ->
+            @Suppress("UNCHECKED_CAST")
+            val map = snapshot.value as? Map<String, Any?> ?: return@addOnSuccessListener
+            val currentState = PlaybackState.fromMap(map)
+            if (currentState.isPlaying) {
+                updatePlaybackState(roomCode, PlaybackState(
+                    isPlaying = false,
+                    positionMs = currentState.positionMs,
+                    speed = currentState.speed,
+                    lastUpdatedBy = currentUser?.uid ?: "",
+                    lastUpdatedAt = System.currentTimeMillis()
+                ))
+                sendSystemMessage(roomCode, "Paused for sync — $displayName rejoined", "system")
+            }
         }
     }
 }

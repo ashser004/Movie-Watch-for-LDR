@@ -68,6 +68,8 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import com.ash.kandaloo.data.RejoinInfo
 import com.ash.kandaloo.service.RoomManager
 import com.ash.kandaloo.ui.theme.GradientEnd
@@ -91,9 +93,14 @@ fun HomeScreen(
 
     LaunchedEffect(Unit) {
         isVisible = true
+    }
+
+    // Refresh rejoin rooms every time the screen becomes visible (on resume)
+    LifecycleResumeEffect(Unit) {
         roomManager.getRecentRooms { rooms ->
             rejoinRooms = rooms
         }
+        onPauseOrDispose { }
     }
 
     Scaffold(
