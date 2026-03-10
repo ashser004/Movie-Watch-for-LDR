@@ -7,6 +7,7 @@ import android.net.Uri
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.FrameLayout
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
@@ -100,6 +101,7 @@ fun VideoPlayerScreen(
     roomCode: String,
     roomManager: RoomManager,
     isHost: Boolean,
+    isRejoin: Boolean = false,
     onExit: () -> Unit
 ) {
     val context = LocalContext.current
@@ -124,15 +126,17 @@ fun VideoPlayerScreen(
     val chatMessages = remember { mutableStateListOf<ChatMessage>() }
     val floatingMessages = remember { mutableStateListOf<ChatMessage>() }
 
+    // Play lock for rejoined users — prevents playing at wrong position
+    var isPlayLocked by remember { mutableStateOf(isRejoin) }
+
     val exoPlayer = remember {
-        ExoPlayer.Builder(context)
-            .build()
-            .apply {
-                val mediaItem = MediaItem.fromUri(videoUri)
-                setMediaItem(mediaItem)
-                prepare()
-                playWhenReady = false
-            }
+        ExoPlayer.Builder(context).build()
+    }
+
+    // Prepare player after composition (non-blocking to avoid startup lag)
+    LaunchedEffect(exoPlayer) {
+        exoPlayer.setMediaItem(MediaItem.fromUri(videoUri))
+        exoPlayer.prepare()
     }
 
     // Keep screen on while watching
@@ -143,9 +147,10 @@ fun VideoPlayerScreen(
         }
     }
 
-    // Start heartbeat and PlaybackService
+    // Start heartbeat, onDisconnect handlers, and PlaybackService
     DisposableEffect(exoPlayer) {
         roomManager.startHeartbeat(roomCode)
+        roomManager.setupOnDisconnect(roomCode, videoUri.toString())
         // Start media session service for notification + background play + bluetooth
         PlaybackService.setPlayer(exoPlayer)
         val serviceIntent = Intent(context, PlaybackService::class.java)
@@ -203,7 +208,7 @@ fun VideoPlayerScreen(
 
         isSyncUpdate = true
         val positionDiff = kotlin.math.abs(exoPlayer.currentPosition - remoteState.positionMs)
-        if (positionDiff > 2000) {
+        if (positionDiff > 1500) {
             exoPlayer.seekTo(remoteState.positionMs)
         }
         exoPlayer.playWhenReady = remoteState.isPlaying
@@ -211,7 +216,11 @@ fun VideoPlayerScreen(
             exoPlayer.playbackParameters = PlaybackParameters(remoteState.speed)
             currentSpeed = remoteState.speed
         }
-        delay(300)
+        // Unlock play for rejoin user when another member starts playing
+        if (isPlayLocked && remoteState.isPlaying) {
+            isPlayLocked = false
+        }
+        delay(500)
         isSyncUpdate = false
     }
 
@@ -240,6 +249,17 @@ fun VideoPlayerScreen(
             floatingMessages.add(msg)
             delay(4000)
             floatingMessages.remove(msg)
+        }
+    }
+
+    // Auto-unlock play after timeout (safety net if no other member presses play)
+    if (isPlayLocked) {
+        LaunchedEffect(Unit) {
+            delay(15_000)
+            if (isPlayLocked) {
+                isPlayLocked = false
+                Toast.makeText(context, "Auto-unlocked \u2014 you can play now", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
@@ -335,7 +355,9 @@ fun VideoPlayerScreen(
                 ))
             },
             onPlayPause = {
-                if (isVideoEnded) {
+                if (isPlayLocked) {
+                    Toast.makeText(context, "Ask another member to play", Toast.LENGTH_SHORT).show()
+                } else if (isVideoEnded) {
                     exoPlayer.seekTo(0)
                     exoPlayer.playWhenReady = true
                     isVideoEnded = false
@@ -418,7 +440,9 @@ fun VideoPlayerScreen(
                         showSpeedMenu = showSpeedMenu,
                         showReactions = showReactions,
                         onPlayPause = {
-                            if (isVideoEnded) {
+                            if (isPlayLocked) {
+                                Toast.makeText(context, "Ask another member to play", Toast.LENGTH_SHORT).show()
+                            } else if (isVideoEnded) {
                                 exoPlayer.seekTo(0)
                                 exoPlayer.playWhenReady = true
                                 isVideoEnded = false

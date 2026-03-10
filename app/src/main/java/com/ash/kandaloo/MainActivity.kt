@@ -66,6 +66,8 @@ fun KanDalooApp(
     var isTransitioningToPlayer by remember { mutableStateOf(false) }
     // Dialog state for file not found during rejoin
     var showFileNotFoundDialog by remember { mutableStateOf(false) }
+    // Track if entering player from a rejoin action
+    var isRejoining by remember { mutableStateOf(false) }
 
     // Check if a content URI is still accessible
     fun isUriAccessible(uri: Uri): Boolean {
@@ -138,6 +140,7 @@ fun KanDalooApp(
                                 onSuccess = { status ->
                                     selectedVideoUri = videoUri
                                     if (status == "playing") {
+                                        isRejoining = true
                                         navController.navigate("player") {
                                             popUpTo("home") { inclusive = false }
                                         }
@@ -184,6 +187,7 @@ fun KanDalooApp(
                 onStartParty = { uri ->
                     selectedVideoUri = uri
                     isTransitioningToPlayer = true
+                    isRejoining = false
                     navController.navigate("player") {
                         popUpTo("room") { inclusive = true }
                     }
@@ -200,9 +204,10 @@ fun KanDalooApp(
                     roomCode = currentRoomCode,
                     roomManager = roomManager,
                     isHost = isCurrentUserHost,
+                    isRejoin = isRejoining,
                     onExit = {
-                        // Both host and member: leaveRoom (which handles cleanup)
                         roomManager.leaveRoom(currentRoomCode, uri.toString())
+                        isRejoining = false
                         navController.navigate("home") {
                             popUpTo("home") { inclusive = true }
                         }

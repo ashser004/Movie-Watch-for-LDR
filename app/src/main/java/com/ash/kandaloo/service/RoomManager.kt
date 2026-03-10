@@ -145,18 +145,21 @@ class RoomManager {
     }
 
     fun startParty(roomCode: String, autoPlay: Boolean = true) {
-        // Clear old chat and reactions from the waiting-room phase
-        roomsRef.child(roomCode).child("chat").removeValue()
-        roomsRef.child(roomCode).child("reactions").removeValue()
-
-        roomsRef.child(roomCode).child("status").setValue("playing")
-        updatePlaybackState(roomCode, PlaybackState(
+        // Single atomic write to prevent multiple onDataChange callbacks and reduce startup lag
+        val playbackState = PlaybackState(
             isPlaying = autoPlay,
             positionMs = 0L,
             speed = 1.0f,
             lastUpdatedBy = currentUser?.uid ?: "",
             lastUpdatedAt = System.currentTimeMillis()
-        ))
+        )
+        val updates = mapOf<String, Any?>(
+            "chat" to null,
+            "reactions" to null,
+            "status" to "playing",
+            "playbackState" to playbackState.toMap()
+        )
+        roomsRef.child(roomCode).updateChildren(updates)
     }
 
     fun setMemberAutoPlay(roomCode: String, autoPlay: Boolean) {
@@ -240,6 +243,8 @@ class RoomManager {
 
     fun leaveRoom(roomCode: String, videoUriString: String = "") {
         val user = currentUser ?: return
+        // Cancel onDisconnect since we're leaving explicitly
+        cancelOnDisconnect(roomCode)
 
         // Read room state BEFORE removing ourselves to avoid race condition
         roomsRef.child(roomCode).get().addOnSuccessListener { snapshot ->
@@ -466,7 +471,6 @@ class RoomManager {
     // ─── Heartbeat / Presence System ───
 
     private var heartbeatJob: Job? = null
-    private var presenceListenerJob: Job? = null
     private val heartbeatScope = CoroutineScope(Dispatchers.IO)
 
     companion object {
@@ -489,6 +493,37 @@ class RoomManager {
     fun stopHeartbeat() {
         heartbeatJob?.cancel()
         heartbeatJob = null
+    }
+
+    fun setupOnDisconnect(roomCode: String, videoUriString: String) {
+        val user = currentUser ?: return
+        val uid = user.uid
+        roomsRef.child(roomCode).get().addOnSuccessListener { snapshot ->
+            val hostName = snapshot.child("hostName").value as? String ?: ""
+            val hostId = snapshot.child("hostId").value as? String ?: ""
+            val isHost = uid == hostId
+            // When disconnected, remove member from room
+            roomsRef.child(roomCode).child("members").child(uid)
+                .onDisconnect().removeValue()
+            // When disconnected, save rejoin entry so user can rejoin later
+            val rejoinData = mapOf<String, Any>(
+                "roomCode" to roomCode,
+                "hostName" to hostName,
+                "leftAt" to ServerValue.TIMESTAMP,
+                "isHost" to isHost,
+                "videoUriString" to videoUriString
+            )
+            usersRef.child(uid).child("recentRooms").child(roomCode)
+                .onDisconnect().setValue(rejoinData)
+        }
+    }
+
+    fun cancelOnDisconnect(roomCode: String) {
+        val user = currentUser ?: return
+        roomsRef.child(roomCode).child("members").child(user.uid)
+            .onDisconnect().cancel()
+        usersRef.child(user.uid).child("recentRooms").child(roomCode)
+            .onDisconnect().cancel()
     }
 
     fun observePresence(roomCode: String, onMemberOffline: (String, String) -> Unit, onAllOffline: () -> Unit): Flow<Map<String, Long>> = callbackFlow {

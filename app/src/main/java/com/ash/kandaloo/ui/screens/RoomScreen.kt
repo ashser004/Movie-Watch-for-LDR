@@ -102,6 +102,7 @@ fun RoomScreen(
     var roomStatus by remember { mutableStateOf("waiting") }
     var allReady by remember { mutableStateOf(false) }
     var metadataMatch by remember { mutableStateOf<Boolean?>(null) }
+    var hasNavigatedToPlayer by remember { mutableStateOf(false) }
 
     val roomDataFlow = remember { roomManager.observeRoom(roomCode) }
     val roomData by roomDataFlow.collectAsState(initial = emptyMap())
@@ -140,8 +141,9 @@ fun RoomScreen(
         // Check if all members are ready and have matching files
         allReady = members.values.all { it.isReady && it.hasMatchingFile }
 
-        // If room status changed to playing, start party
-        if (roomStatus == "playing" && videoUri != null) {
+        // If room status changed to playing, start party (guard prevents double navigation)
+        if (roomStatus == "playing" && videoUri != null && !hasNavigatedToPlayer) {
+            hasNavigatedToPlayer = true
             onStartParty(videoUri!!)
         }
     }
@@ -438,6 +440,7 @@ fun RoomScreen(
                                         snackbarHostState.showSnackbar("Not all members have auto-play enabled")
                                     }
                                 }
+                                hasNavigatedToPlayer = true
                                 onStartParty(videoUri!!)
                             }
                         },
