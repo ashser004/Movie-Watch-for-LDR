@@ -15,7 +15,7 @@ bin/
 gen/
 out/
 build/
-
+release/
 # Gradle files
 .gradle/
 local.properties
