@@ -1,3 +1,5 @@
+import java.io.File
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -5,9 +7,35 @@ plugins {
     alias(libs.plugins.google.services)
 }
 
+fun secret(name: String): String? =
+    providers.gradleProperty(name).orNull ?: providers.environmentVariable(name).orNull
+
+val releaseKeystorePath = secret("KANDALOO_KEYSTORE_FILE")
+val releaseKeystorePassword = secret("KANDALOO_KEYSTORE_PASSWORD")
+val releaseKeyAlias = secret("KANDALOO_KEY_ALIAS")
+val releaseKeyPassword = secret("KANDALOO_KEY_PASSWORD")
+
+val hasReleaseSigning = listOf(
+    releaseKeystorePath,
+    releaseKeystorePassword,
+    releaseKeyAlias,
+    releaseKeyPassword,
+).all { !it.isNullOrBlank() }
+
 android {
     namespace = "com.ash.kandaloo"
     compileSdk = 36
+
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = File(releaseKeystorePath!!)
+                storePassword = releaseKeystorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
 
     defaultConfig {
         applicationId = "com.ash.kandaloo"
@@ -22,6 +50,9 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
