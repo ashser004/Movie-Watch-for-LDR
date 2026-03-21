@@ -22,6 +22,32 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      # ── FFmpeg build (cached to skip repeat compilations) ──
+      - name: Cache FFmpeg build
+        id: ffmpeg-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ffmpeg-decoder/src/main/jni/
+            ffmpeg-decoder/src/main/java/androidx/media3/decoder/ffmpeg/Ffmpeg*.java
+            ffmpeg-decoder/src/main/java/androidx/media3/decoder/ffmpeg/ExperimentalFfmpegVideoRenderer.java
+            ffmpeg-decoder/src/main/java/androidx/media3/decoder/ffmpeg/package-info.java
+          key: ffmpeg-ndk26d-v1
+
+      - name: Set up Android SDK + NDK
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'ndk;26.3.11579264'
+
+      - name: Build FFmpeg decoder extension
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          chmod +x scripts/setup_ffmpeg.sh
+          bash scripts/setup_ffmpeg.sh "$ANDROID_NDK_HOME"
+
+      # ── App build ──
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 

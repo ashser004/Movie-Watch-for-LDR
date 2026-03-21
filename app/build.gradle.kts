@@ -102,6 +102,10 @@ dependencies {
     implementation(libs.androidx.media3.exoplayer)
     implementation(libs.androidx.media3.ui)
     implementation(libs.androidx.media3.session)
+    implementation(libs.androidx.media3.datasource)
+
+    // FFmpeg decoder extension (AC3/EAC3/DTS software decoding)
+    implementation(project(":ffmpeg-decoder"))
 
     // Coil for image loading
     implementation(libs.coil.compose)

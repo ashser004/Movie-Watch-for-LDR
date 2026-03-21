@@ -21,3 +21,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "KanDaloo"
 include(":app")
+include(":ffmpeg-decoder")

@@ -75,11 +75,21 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
+import androidx.media3.common.TrackSelectionOverride
+import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
 import com.ash.kandaloo.data.ChatMessage
 import com.ash.kandaloo.data.PlaybackState
@@ -128,14 +138,68 @@ fun VideoPlayerScreen(
 
     // Play lock for rejoined users — prevents playing at wrong position
     var isPlayLocked by remember { mutableStateOf(isRejoin) }
+    var audioIssueWarningShown by remember { mutableStateOf(false) }
 
     val exoPlayer = remember {
-        ExoPlayer.Builder(context).build()
+        // Enable software decoders for AC3/EAC3/DTS/etc. that many devices lack hardware support for
+        val renderersFactory = DefaultRenderersFactory(context)
+            .setEnableDecoderFallback(true)
+            .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
+
+        // Configure HTTP data source with proper timeouts for large file streaming
+        val httpDataSourceFactory = DefaultHttpDataSource.Factory()
+            .setUserAgent("KanDaloo/1.0")
+            .setConnectTimeoutMs(30_000)
+            .setReadTimeoutMs(60_000)
+            .setAllowCrossProtocolRedirects(true)
+
+        // Wrap HTTP factory so local content:// URIs still work
+        val dataSourceFactory = DefaultDataSource.Factory(context, httpDataSourceFactory)
+
+        // Create media source factory with our configured data source
+        val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
+
+        ExoPlayer.Builder(context)
+            .setRenderersFactory(renderersFactory)
+            .setMediaSourceFactory(mediaSourceFactory)
+            .build()
+            .apply {
+                // Ensure the stream is routed and treated as media playback audio.
+                setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(C.USAGE_MEDIA)
+                        .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+                        .build(),
+                    true
+                )
+                volume = 1.0f
+            }
     }
 
     // Prepare player after composition (non-blocking to avoid startup lag)
     LaunchedEffect(exoPlayer) {
-        exoPlayer.setMediaItem(MediaItem.fromUri(videoUri))
+        // Detect MIME type from URI to help ExoPlayer pick the right extractor
+        val uriString = videoUri.toString().lowercase()
+        val mimeType = when {
+            uriString.contains(".mkv") || uriString.contains("matroska") -> MimeTypes.APPLICATION_MATROSKA
+            uriString.contains(".mp4") || uriString.contains(".m4v") -> MimeTypes.VIDEO_MP4
+            uriString.contains(".webm") -> MimeTypes.APPLICATION_WEBM
+            uriString.contains(".ts") -> "video/mp2t"
+            uriString.contains(".avi") -> "video/x-msvideo"
+            uriString.contains(".flv") -> "video/x-flv"
+            else -> null  // Let ExoPlayer auto-detect
+        }
+
+        val mediaItem = if (mimeType != null) {
+            MediaItem.Builder()
+                .setUri(videoUri)
+                .setMimeType(mimeType)
+                .build()
+        } else {
+            MediaItem.fromUri(videoUri)
+        }
+
+        exoPlayer.setMediaItem(mediaItem)
         exoPlayer.prepare()
     }
 
@@ -266,6 +330,49 @@ fun VideoPlayerScreen(
     // Player listener for local state changes -> push to Firebase
     DisposableEffect(exoPlayer) {
         val listener = object : Player.Listener {
+            override fun onTracksChanged(tracks: Tracks) {
+                val anyAudioSupported = tracks.groups.any { group ->
+                    group.type == C.TRACK_TYPE_AUDIO &&
+                        (0 until group.length).any { trackIndex -> group.isTrackSupported(trackIndex) }
+                }
+
+                val anyAudioSelected = tracks.groups.any { group ->
+                    group.type == C.TRACK_TYPE_AUDIO &&
+                        (0 until group.length).any { trackIndex -> group.isTrackSelected(trackIndex) }
+                }
+
+                if (!anyAudioSupported && !audioIssueWarningShown) {
+                    audioIssueWarningShown = true
+                    Toast.makeText(
+                        context,
+                        "This video uses AC3 audio, which this device may not decode.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    return
+                }
+
+                if (anyAudioSelected) return
+
+                val firstSupportedAudioGroup = tracks.groups.firstOrNull { group ->
+                    group.type == C.TRACK_TYPE_AUDIO &&
+                        (0 until group.length).any { trackIndex -> group.isTrackSupported(trackIndex) }
+                } ?: return
+
+                val firstSupportedTrackIndex = (0 until firstSupportedAudioGroup.length)
+                    .firstOrNull { trackIndex -> firstSupportedAudioGroup.isTrackSupported(trackIndex) }
+                    ?: return
+
+                exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
+                    .buildUpon()
+                    .setOverrideForType(
+                        TrackSelectionOverride(
+                            firstSupportedAudioGroup.mediaTrackGroup,
+                            listOf(firstSupportedTrackIndex)
+                        )
+                    )
+                    .build()
+            }
+
             override fun onIsPlayingChanged(playing: Boolean) {
                 if (isSyncUpdate) return
                 roomManager.updatePlaybackState(roomCode, PlaybackState(
@@ -281,6 +388,26 @@ fun VideoPlayerScreen(
                 if (playbackState == Player.STATE_ENDED) {
                     isVideoEnded = true
                 }
+            }
+
+            override fun onPlayerError(error: PlaybackException) {
+                val errorMsg = when (error.errorCode) {
+                    PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+                    PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ->
+                        "Network error — check your connection"
+                    PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ->
+                        "Server error — file may be unavailable"
+                    PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND ->
+                        "File not found"
+                    PlaybackException.ERROR_CODE_DECODER_INIT_FAILED,
+                    PlaybackException.ERROR_CODE_DECODING_FAILED ->
+                        "Codec not supported on this device"
+                    PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED ->
+                        "Unsupported file format"
+                    else ->
+                        "Playback error: ${error.localizedMessage}"
+                }
+                Toast.makeText(context, errorMsg, Toast.LENGTH_LONG).show()
             }
         }
         exoPlayer.addListener(listener)

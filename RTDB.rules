@@ -1,0 +1,55 @@
+{
+  "rules": {
+    // ─── Watch-Party Rooms ───
+    "rooms": {
+      "$roomCode": {
+        // Anyone authenticated can read room data
+        ".read": "auth != null",
+
+        // Only the host can create / delete a room
+        ".write": "auth != null && (!data.exists() || data.child('hostId').val() === auth.uid)",
+
+        "members": {
+          "$uid": {
+            // Members can add/update/remove themselves
+            ".write": "auth != null && auth.uid === $uid"
+          }
+        },
+
+        "playbackState": {
+          // Any authenticated room member can update playback
+          ".write": "auth != null && data.parent().child('members').child(auth.uid).exists()"
+        },
+
+        "reactions": {
+          // Any authenticated room member can push reactions
+          ".write": "auth != null && data.parent().child('members').child(auth.uid).exists()"
+        },
+
+        "chat": {
+          // Any authenticated room member can push chat messages
+          ".write": "auth != null && data.parent().child('members').child(auth.uid).exists()"
+        },
+
+        "status": {
+          // Host can change room status; system messages (leave/join) also need write
+          ".write": "auth != null && data.parent().child('hostId').val() === auth.uid"
+        },
+
+        "videoMetadata": {
+          // Host sets the reference video metadata
+          ".write": "auth != null && data.parent().child('hostId').val() === auth.uid"
+        }
+      }
+    },
+
+    // ─── Per-User Data (rejoin tracking) ───
+    "users": {
+      "$uid": {
+        // Users can only read/write their own data
+        ".read": "auth != null && auth.uid === $uid",
+        ".write": "auth != null && auth.uid === $uid"
+      }
+    }
+  }
+}
