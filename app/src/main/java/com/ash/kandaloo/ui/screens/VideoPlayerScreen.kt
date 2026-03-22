@@ -3,13 +3,17 @@ package com.ash.kandaloo.ui.screens
 import android.app.Activity
 import android.content.Intent
 import android.content.pm.ActivityInfo
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.OptIn
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -18,6 +22,7 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -36,14 +41,17 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Mood
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -69,6 +77,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -96,11 +105,16 @@ import com.ash.kandaloo.data.PlaybackState
 import com.ash.kandaloo.data.ReactionEvent
 import com.ash.kandaloo.service.PlaybackService
 import com.ash.kandaloo.service.RoomManager
+import com.ash.kandaloo.service.VoicePlayerManager
+import com.ash.kandaloo.service.VoiceRecorder
 import com.ash.kandaloo.ui.components.ChatSection
 import com.ash.kandaloo.ui.components.FloatingMessageOverlay
 import com.ash.kandaloo.ui.components.ReactionOverlay
 import com.ash.kandaloo.ui.components.ReactionPicker
+import com.ash.kandaloo.ui.components.RecordingWaveform
+import com.ash.kandaloo.ui.components.formatVoiceDuration
 import com.google.firebase.auth.FirebaseAuth
+import java.io.File
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -136,9 +150,46 @@ fun VideoPlayerScreen(
     val chatMessages = remember { mutableStateListOf<ChatMessage>() }
     val floatingMessages = remember { mutableStateListOf<ChatMessage>() }
 
+    // Voice player for voice notes (separate from ExoPlayer)
+    val voicePlayerManager = remember { VoicePlayerManager(context) }
+    var isUploadingVoice by remember { mutableStateOf(false) }
+
     // Play lock for rejoined users — prevents playing at wrong position
     var isPlayLocked by remember { mutableStateOf(isRejoin) }
     var audioIssueWarningShown by remember { mutableStateOf(false) }
+
+    // Voice upload helper
+    val voiceUploadAndSend: (File, Long) -> Unit = { file, durationMs ->
+        if (!isUploadingVoice) {
+            isUploadingVoice = true
+            Toast.makeText(context, "Sending voice note...", Toast.LENGTH_SHORT).show()
+            roomManager.getCloudinarySignature(
+                onSuccess = { signature, timestamp, apiKey, cloudName, folder ->
+                    roomManager.uploadVoiceToCloudinary(
+                        file = file,
+                        signature = signature,
+                        timestamp = timestamp,
+                        apiKey = apiKey,
+                        cloudName = cloudName,
+                        folder = folder,
+                        onSuccess = { audioUrl ->
+                            roomManager.sendVoiceMessage(roomCode, audioUrl, durationMs)
+                            file.delete()
+                            isUploadingVoice = false
+                        },
+                        onFailure = { err ->
+                            Toast.makeText(context, "Upload failed: $err", Toast.LENGTH_LONG).show()
+                            isUploadingVoice = false
+                        }
+                    )
+                },
+                onFailure = { err ->
+                    Toast.makeText(context, "Auth failed: $err", Toast.LENGTH_LONG).show()
+                    isUploadingVoice = false
+                }
+            )
+        }
+    }
 
     val exoPlayer = remember {
         // Enable software decoders for AC3/EAC3/DTS/etc. that many devices lack hardware support for
@@ -414,6 +465,8 @@ fun VideoPlayerScreen(
         onDispose {
             exoPlayer.removeListener(listener)
             exoPlayer.release()
+            voicePlayerManager.clearCache()
+            voicePlayerManager.release()
         }
     }
 
@@ -444,6 +497,8 @@ fun VideoPlayerScreen(
             currentSpeed = currentSpeed,
             visibleReactions = visibleReactions.toList(),
             floatingMessages = floatingMessages.toList(),
+            voicePlayerManager = voicePlayerManager,
+            onSendVoice = voiceUploadAndSend,
             onToggleControls = {
                 showControls = !showControls
                 showReactions = false
@@ -656,6 +711,8 @@ fun VideoPlayerScreen(
                 onSendMessage = { message ->
                     roomManager.sendChatMessage(roomCode, message)
                 },
+                voicePlayerManager = voicePlayerManager,
+                onSendVoice = voiceUploadAndSend,
                 modifier = Modifier.weight(1f)
             )
         }
@@ -903,6 +960,8 @@ private fun FullscreenPlayer(
     currentSpeed: Float,
     visibleReactions: List<ReactionEvent>,
     floatingMessages: List<ChatMessage>,
+    voicePlayerManager: VoicePlayerManager,
+    onSendVoice: (File, Long) -> Unit,
     onToggleControls: () -> Unit,
     onToggleReactions: () -> Unit,
     onToggleSpeedMenu: () -> Unit,
@@ -915,6 +974,35 @@ private fun FullscreenPlayer(
     onExit: () -> Unit,
     onReaction: (String) -> Unit
 ) {
+    val context = LocalContext.current
+    // Fullscreen voice recording state
+    var isFullscreenRecording by remember { mutableStateOf(false) }
+    val fullscreenRecorder = remember { VoiceRecorder(context) }
+    var fsRecordingElapsedMs by remember { mutableLongStateOf(0L) }
+
+    // Recording timer
+    LaunchedEffect(isFullscreenRecording) {
+        if (isFullscreenRecording) {
+            while (isFullscreenRecording) {
+                fsRecordingElapsedMs = fullscreenRecorder.getElapsedMs()
+                delay(200)
+            }
+        }
+
+    }
+
+    // Permission launcher for fullscreen mic
+    val fsPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            if (fullscreenRecorder.startRecording()) {
+                isFullscreenRecording = true
+            }
+        } else {
+            Toast.makeText(context, "Microphone permission required", Toast.LENGTH_SHORT).show()
+        }
+    }
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -939,9 +1027,11 @@ private fun FullscreenPlayer(
             modifier = Modifier.fillMaxSize()
         )
 
-        // Floating chat messages (left side)
+        // Floating chat messages (left side) — with voice auto-play
         FloatingMessageOverlay(
             messages = floatingMessages,
+            voicePlayerManager = voicePlayerManager,
+            currentUserId = currentUserId,
             modifier = Modifier
                 .align(Alignment.BottomStart)
                 .padding(start = 16.dp, bottom = 80.dp)
@@ -1115,6 +1205,30 @@ private fun FullscreenPlayer(
                             )
                         }
 
+                        // Mic button (fullscreen only)
+                        IconButton(
+                            onClick = {
+                                val hasPermission = ContextCompat.checkSelfPermission(
+                                    context, android.Manifest.permission.RECORD_AUDIO
+                                ) == PackageManager.PERMISSION_GRANTED
+
+                                if (hasPermission) {
+                                    if (fullscreenRecorder.startRecording()) {
+                                        isFullscreenRecording = true
+                                    }
+                                } else {
+                                    fsPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
+                                }
+                            }
+                        ) {
+                            Icon(
+                                Icons.Default.Mic,
+                                contentDescription = "Voice note",
+                                tint = Color.White,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+
                         // Exit fullscreen
                         IconButton(onClick = onExitFullscreen) {
                             Icon(
@@ -1138,6 +1252,104 @@ private fun FullscreenPlayer(
             ReactionPicker(
                 onReactionSelected = { emoji -> onReaction(emoji) }
             )
+        }
+
+        // ─── Fullscreen inline recording overlay ───
+        AnimatedVisibility(
+            visible = isFullscreenRecording,
+            enter = slideInVertically { it } + fadeIn(),
+            exit = slideOutVertically { it } + fadeOut(),
+            modifier = Modifier.align(Alignment.BottomCenter)
+        ) {
+            Row(
+                modifier = Modifier
+                    .padding(horizontal = 32.dp, vertical = 16.dp)
+                    .clip(RoundedCornerShape(28.dp))
+                    .background(Color(0xCC1A1A2E))
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Red recording dot
+                Box(
+                    modifier = Modifier
+                        .size(10.dp)
+                        .clip(CircleShape)
+                        .background(Color.Red)
+                )
+
+                Spacer(modifier = Modifier.width(8.dp))
+
+                // Animated waveform
+                RecordingWaveform(
+                    color = Color.Red,
+                    modifier = Modifier.height(20.dp)
+                )
+
+                Spacer(modifier = Modifier.width(12.dp))
+
+                // Timer
+                Text(
+                    text = formatVoiceDuration(fsRecordingElapsedMs),
+                    color = Color.White,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+
+                Spacer(modifier = Modifier.width(16.dp))
+
+                // Cancel button
+                IconButton(
+                    onClick = {
+                        fullscreenRecorder.cancelRecording()
+                        isFullscreenRecording = false
+                        fsRecordingElapsedMs = 0L
+                    },
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(Color.White.copy(alpha = 0.15f))
+                ) {
+                    Icon(
+                        Icons.Default.Close,
+                        contentDescription = "Cancel",
+                        tint = Color.Red.copy(alpha = 0.9f),
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.width(8.dp))
+
+                // Send button
+                IconButton(
+                    onClick = {
+                        val result = fullscreenRecorder.stopRecording()
+                        isFullscreenRecording = false
+                        fsRecordingElapsedMs = 0L
+                        if (result != null) {
+                            Toast.makeText(context, "Sending voice note...", Toast.LENGTH_SHORT).show()
+                            onSendVoice(result.file, result.durationMs)
+                        }
+                    },
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(
+                            Brush.linearGradient(
+                                colors = listOf(
+                                    Color(0xFF6C63FF),
+                                    Color(0xFF3F51B5)
+                                )
+                            )
+                        )
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.Send,
+                        contentDescription = "Send voice",
+                        tint = Color.White,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
         }
     }
 }

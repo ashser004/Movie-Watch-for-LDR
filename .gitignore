@@ -59,3 +59,5 @@ Thumbs.db
 # Misc local notes
 manual code snippets.txt
 AGENT_INSTRUCTIONS.md
+worker.js
+RTDB.rules

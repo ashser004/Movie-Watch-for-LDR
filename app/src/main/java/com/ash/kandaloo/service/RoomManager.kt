@@ -468,15 +468,164 @@ class RoomManager {
         }
     }
 
+    // ─── Voice Note Methods ───
+
+    /** The Cloudflare Worker URL — set this to your deployed worker endpoint */
+    companion object {
+        const val HEARTBEAT_INTERVAL_MS = 4000L
+        const val OFFLINE_THRESHOLD_MS = 10000L
+        const val WORKER_URL = "https://kandeloo.ashmithb796.workers.dev/sign"
+    }
+
+    fun sendVoiceMessage(roomCode: String, audioUrl: String, durationMs: Long) {
+        val user = currentUser ?: return
+        val voiceMsg = mapOf(
+            "senderId" to user.uid,
+            "senderName" to (user.displayName ?: ""),
+            "message" to "🎤 Voice message",
+            "timestamp" to ServerValue.TIMESTAMP,
+            "type" to "voice",
+            "audioUrl" to audioUrl,
+            "audioDurationMs" to durationMs
+        )
+        roomsRef.child(roomCode).child("chat").push().setValue(voiceMsg)
+    }
+
+    fun getCloudinarySignature(
+        onSuccess: (signature: String, timestamp: Long, apiKey: String, cloudName: String, folder: String) -> Unit,
+        onFailure: (String) -> Unit
+    ) {
+        val user = currentUser ?: run { onFailure("Not logged in"); return }
+        user.getIdToken(false).addOnSuccessListener { tokenResult ->
+            val idToken = tokenResult.token ?: run { onFailure("No ID token"); return@addOnSuccessListener }
+
+            val thread = Thread {
+                try {
+                    val url = java.net.URL(WORKER_URL)
+                    val conn = url.openConnection() as java.net.HttpURLConnection
+                    conn.requestMethod = "POST"
+                    conn.setRequestProperty("Authorization", "Bearer $idToken")
+                    conn.setRequestProperty("Content-Type", "application/json")
+                    conn.connectTimeout = 10_000
+                    conn.readTimeout = 10_000
+
+                    val responseCode = conn.responseCode
+                    val body = if (responseCode in 200..299) {
+                        conn.inputStream.bufferedReader().readText()
+                    } else {
+                        conn.errorStream?.bufferedReader()?.readText() ?: "Unknown error"
+                    }
+                    conn.disconnect()
+
+                    if (responseCode != 200) {
+                        android.os.Handler(android.os.Looper.getMainLooper()).post {
+                            onFailure("Server error: $body")
+                        }
+                        return@Thread
+                    }
+
+                    val json = org.json.JSONObject(body)
+                    val signature = json.getString("signature")
+                    val timestamp = json.getLong("timestamp")
+                    val apiKey = json.getString("apiKey")
+                    val cloudName = json.getString("cloudName")
+                    val folder = json.getString("folder")
+
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        onSuccess(signature, timestamp, apiKey, cloudName, folder)
+                    }
+                } catch (e: Exception) {
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        onFailure(e.message ?: "Signature request failed")
+                    }
+                }
+            }
+            thread.start()
+        }.addOnFailureListener {
+            onFailure(it.message ?: "Failed to get ID token")
+        }
+    }
+
+    fun uploadVoiceToCloudinary(
+        file: java.io.File,
+        signature: String,
+        timestamp: Long,
+        apiKey: String,
+        cloudName: String,
+        folder: String,
+        onSuccess: (audioUrl: String) -> Unit,
+        onFailure: (String) -> Unit
+    ) {
+        val thread = Thread {
+            try {
+                val boundary = "----KanDaloo${System.currentTimeMillis()}"
+                val url = java.net.URL("https://api.cloudinary.com/v1_1/$cloudName/video/upload")
+                val conn = url.openConnection() as java.net.HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.doOutput = true
+                conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+                conn.connectTimeout = 30_000
+                conn.readTimeout = 60_000
+
+                val output = conn.outputStream
+
+                fun writeField(name: String, value: String) {
+                    output.write("--$boundary\r\n".toByteArray())
+                    output.write("Content-Disposition: form-data; name=\"$name\"\r\n\r\n".toByteArray())
+                    output.write("$value\r\n".toByteArray())
+                }
+
+                writeField("api_key", apiKey)
+                writeField("timestamp", timestamp.toString())
+                writeField("signature", signature)
+                writeField("folder", folder)
+                writeField("resource_type", "video")
+
+                // File part
+                output.write("--$boundary\r\n".toByteArray())
+                output.write("Content-Disposition: form-data; name=\"file\"; filename=\"${file.name}\"\r\n".toByteArray())
+                output.write("Content-Type: audio/ogg\r\n\r\n".toByteArray())
+                file.inputStream().use { it.copyTo(output) }
+                output.write("\r\n".toByteArray())
+
+                output.write("--$boundary--\r\n".toByteArray())
+                output.flush()
+                output.close()
+
+                val responseCode = conn.responseCode
+                val body = if (responseCode in 200..299) {
+                    conn.inputStream.bufferedReader().readText()
+                } else {
+                    conn.errorStream?.bufferedReader()?.readText() ?: "Upload failed"
+                }
+                conn.disconnect()
+
+                if (responseCode != 200) {
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        onFailure("Upload error: $body")
+                    }
+                    return@Thread
+                }
+
+                val json = org.json.JSONObject(body)
+                val secureUrl = json.getString("secure_url")
+
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    onSuccess(secureUrl)
+                }
+            } catch (e: Exception) {
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    onFailure(e.message ?: "Upload failed")
+                }
+            }
+        }
+        thread.start()
+    }
+
     // ─── Heartbeat / Presence System ───
 
     private var heartbeatJob: Job? = null
     private val heartbeatScope = CoroutineScope(Dispatchers.IO)
-
-    companion object {
-        const val HEARTBEAT_INTERVAL_MS = 4000L
-        const val OFFLINE_THRESHOLD_MS = 10000L
-    }
 
     fun startHeartbeat(roomCode: String) {
         stopHeartbeat()
