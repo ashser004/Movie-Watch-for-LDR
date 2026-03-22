@@ -579,7 +579,6 @@ class RoomManager {
                 writeField("timestamp", timestamp.toString())
                 writeField("signature", signature)
                 writeField("folder", folder)
-                writeField("resource_type", "video")
 
                 // File part
                 output.write("--$boundary\r\n".toByteArray())

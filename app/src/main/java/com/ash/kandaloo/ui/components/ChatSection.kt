@@ -226,8 +226,8 @@ fun ChatSection(
 
                         Spacer(modifier = Modifier.width(8.dp))
 
-                        // Dynamic mic/send button
-                        val showSend = messageText.isNotBlank() || isTextFieldFocused
+                        // Dynamic mic/send button — only show send when there's text
+                        val showSend = messageText.isNotBlank()
                         IconButton(
                             onClick = {
                                 if (showSend) {
