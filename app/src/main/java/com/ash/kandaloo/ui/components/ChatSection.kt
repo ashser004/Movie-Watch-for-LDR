@@ -10,6 +10,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -298,7 +299,7 @@ fun ChatSection(
                 }
 
                 VoiceInputState.RECORDING -> {
-                    // Recording UI: waveform + timer + delete + stop
+                    // Recording UI: waveform + timer + delete + stop + send
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -346,7 +347,7 @@ fun ChatSection(
                             )
                         }
 
-                        Spacer(modifier = Modifier.width(8.dp))
+                        Spacer(modifier = Modifier.width(12.dp))
 
                         // Stop button
                         IconButton(
@@ -370,6 +371,41 @@ fun ChatSection(
                             Icon(
                                 Icons.Default.Stop,
                                 contentDescription = "Stop recording",
+                                tint = MaterialTheme.colorScheme.onPrimary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.width(12.dp))
+
+                        // Send button (stop + send in one go)
+                        IconButton(
+                            onClick = {
+                                val result = voiceRecorder.stopRecording()
+                                recordingElapsedMs = 0L
+                                if (result != null) {
+                                    voiceState = VoiceInputState.IDLE
+                                    onSendVoice?.invoke(result.file, result.durationMs)
+                                } else {
+                                    Toast.makeText(context, "Recording failed", Toast.LENGTH_SHORT).show()
+                                    voiceState = VoiceInputState.IDLE
+                                }
+                            },
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    Brush.linearGradient(
+                                        colors = listOf(
+                                            MaterialTheme.colorScheme.primary,
+                                            MaterialTheme.colorScheme.secondary
+                                        )
+                                    )
+                                )
+                        ) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.Send,
+                                contentDescription = "Send voice",
                                 tint = MaterialTheme.colorScheme.onPrimary,
                                 modifier = Modifier.size(18.dp)
                             )
@@ -436,7 +472,7 @@ fun ChatSection(
                             fontSize = 11.sp
                         )
 
-                        Spacer(modifier = Modifier.width(8.dp))
+                        Spacer(modifier = Modifier.width(12.dp))
 
                         // Delete
                         IconButton(
@@ -447,15 +483,24 @@ fun ChatSection(
                                 recordedDurationMs = 0L
                                 voiceState = VoiceInputState.IDLE
                             },
-                            modifier = Modifier.size(32.dp)
+                            modifier = Modifier
+                                .size(34.dp)
+                                .clip(CircleShape)
+                                .border(
+                                    width = 1.5.dp,
+                                    color = MaterialTheme.colorScheme.error.copy(alpha = 0.7f),
+                                    shape = CircleShape
+                                )
                         ) {
                             Icon(
                                 Icons.Default.Delete,
                                 contentDescription = "Delete",
                                 tint = MaterialTheme.colorScheme.error,
-                                modifier = Modifier.size(18.dp)
+                                modifier = Modifier.size(16.dp)
                             )
                         }
+
+                        Spacer(modifier = Modifier.width(12.dp))
 
                         // Send
                         IconButton(

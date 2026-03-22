@@ -79,6 +79,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -225,6 +226,16 @@ fun VideoPlayerScreen(
                 )
                 volume = 1.0f
             }
+    }
+
+    // Audio ducking: reduce video volume when a voice note is playing
+    val voicePlaying by voicePlayerManager.isPlaying.collectAsState()
+    LaunchedEffect(voicePlaying) {
+        if (voicePlaying) {
+            exoPlayer.volume = 0.15f  // Duck video audio
+        } else {
+            exoPlayer.volume = 1.0f   // Restore
+        }
     }
 
     // Prepare player after composition (non-blocking to avoid startup lag)
@@ -527,9 +538,10 @@ fun VideoPlayerScreen(
             },
             onSeekEnd = {
                 exoPlayer.seekTo(seekPosition)
+                exoPlayer.playWhenReady = false  // Pause after seek for sync
                 isUserSeeking = false
                 roomManager.updatePlaybackState(roomCode, PlaybackState(
-                    isPlaying = exoPlayer.playWhenReady,
+                    isPlaying = false,
                     positionMs = seekPosition,
                     speed = currentSpeed,
                     lastUpdatedBy = currentUserId,
@@ -693,9 +705,10 @@ fun VideoPlayerScreen(
                 },
                 onSeekEnd = {
                     exoPlayer.seekTo(seekPosition)
+                    exoPlayer.playWhenReady = false  // Pause after seek for sync
                     isUserSeeking = false
                     roomManager.updatePlaybackState(roomCode, PlaybackState(
-                        isPlaying = exoPlayer.playWhenReady,
+                        isPlaying = false,
                         positionMs = seekPosition,
                         speed = currentSpeed,
                         lastUpdatedBy = currentUserId,
@@ -923,7 +936,8 @@ private fun PortraitSeekBar(
             onValueChangeFinished = onSeekEnd,
             modifier = Modifier
                 .weight(1f)
-                .padding(horizontal = 4.dp),
+                .padding(horizontal = 4.dp)
+                .graphicsLayer(scaleY = 0.8f),
             colors = SliderDefaults.colors(
                 thumbColor = MaterialTheme.colorScheme.primary,
                 activeTrackColor = MaterialTheme.colorScheme.primary,
@@ -1145,7 +1159,8 @@ private fun FullscreenPlayer(
                             onValueChangeFinished = onSeekEnd,
                             modifier = Modifier
                                 .weight(1f)
-                                .padding(horizontal = 12.dp),
+                                .padding(horizontal = 12.dp)
+                                .graphicsLayer(scaleY = 0.8f),
                             colors = SliderDefaults.colors(
                                 thumbColor = MaterialTheme.colorScheme.primary,
                                 activeTrackColor = MaterialTheme.colorScheme.primary,
@@ -1263,7 +1278,8 @@ private fun FullscreenPlayer(
         ) {
             Row(
                 modifier = Modifier
-                    .padding(horizontal = 32.dp, vertical = 16.dp)
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 16.dp)
                     .clip(RoundedCornerShape(28.dp))
                     .background(Color(0xCC1A1A2E))
                     .padding(horizontal = 16.dp, vertical = 12.dp),
@@ -1295,9 +1311,9 @@ private fun FullscreenPlayer(
                     fontWeight = FontWeight.SemiBold
                 )
 
-                Spacer(modifier = Modifier.width(16.dp))
+                Spacer(modifier = Modifier.weight(1f))
 
-                // Cancel button
+                // Cancel/Delete button
                 IconButton(
                     onClick = {
                         fullscreenRecorder.cancelRecording()
@@ -1317,7 +1333,7 @@ private fun FullscreenPlayer(
                     )
                 }
 
-                Spacer(modifier = Modifier.width(8.dp))
+                Spacer(modifier = Modifier.width(16.dp))
 
                 // Send button
                 IconButton(
@@ -1331,7 +1347,7 @@ private fun FullscreenPlayer(
                         }
                     },
                     modifier = Modifier
-                        .size(36.dp)
+                        .size(40.dp)
                         .clip(CircleShape)
                         .background(
                             Brush.linearGradient(
