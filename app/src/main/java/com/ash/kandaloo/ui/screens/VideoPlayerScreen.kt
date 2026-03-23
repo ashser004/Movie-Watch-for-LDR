@@ -228,14 +228,14 @@ fun VideoPlayerScreen(
             }
     }
 
-    // Audio ducking: reduce video volume when a voice note is playing OR recording
+    // Audio ducking: mute during recording, near-mute during voice playback
     val voicePlaying by voicePlayerManager.isPlaying.collectAsState()
     var isPortraitRecording by remember { mutableStateOf(false) }
     LaunchedEffect(voicePlaying, isPortraitRecording) {
-        if (voicePlaying || isPortraitRecording) {
-            exoPlayer.volume = 0.15f  // Duck video audio
-        } else {
-            exoPlayer.volume = 1.0f   // Restore
+        exoPlayer.volume = when {
+            isPortraitRecording -> 0.0f   // Mute while recording
+            voicePlaying -> 0.05f         // 5% while listening to voice
+            else -> 1.0f                  // Full volume
         }
     }
 
@@ -996,13 +996,9 @@ private fun FullscreenPlayer(
     val fullscreenRecorder = remember { VoiceRecorder(context) }
     var fsRecordingElapsedMs by remember { mutableLongStateOf(0L) }
 
-    // Duck video audio while recording in fullscreen
+    // Mute video audio while recording in fullscreen
     LaunchedEffect(isFullscreenRecording) {
-        if (isFullscreenRecording) {
-            exoPlayer.volume = 0.15f
-        } else {
-            exoPlayer.volume = 1.0f
-        }
+        exoPlayer.volume = if (isFullscreenRecording) 0.0f else 1.0f
     }
 
     // Recording timer
