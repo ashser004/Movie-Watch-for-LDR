@@ -89,6 +89,7 @@ fun ChatSection(
     onSendMessage: (String) -> Unit,
     voicePlayerManager: VoicePlayerManager,
     onSendVoice: ((File, Long) -> Unit)? = null,
+    onRecordingStateChanged: ((Boolean) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -103,6 +104,11 @@ fun ChatSection(
     var recordingElapsedMs by remember { mutableLongStateOf(0L) }
     var recordedFile by remember { mutableStateOf<File?>(null) }
     var recordedDurationMs by remember { mutableLongStateOf(0L) }
+
+    // Notify parent when recording state changes (for audio ducking)
+    LaunchedEffect(voiceState) {
+        onRecordingStateChanged?.invoke(voiceState == VoiceInputState.RECORDING)
+    }
 
     // Permission launcher
     val permissionLauncher = rememberLauncherForActivityResult(
