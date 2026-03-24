@@ -42,6 +42,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.Mic
@@ -50,8 +52,8 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Replay
+import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.Speed
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -159,6 +161,18 @@ fun VideoPlayerScreen(
     var isPlayLocked by remember { mutableStateOf(isRejoin) }
     var audioIssueWarningShown by remember { mutableStateOf(false) }
 
+    // Skip lock state (for ±10s skip with 5s cooldown)
+    var skipLockBy by remember { mutableStateOf("") }
+    var skipLockAt by remember { mutableLongStateOf(0L) }
+
+    // Observe skip lock from RTDB
+    LaunchedEffect(roomCode) {
+        roomManager.observeSkipLock(roomCode).collect { (lockedBy, lockedAt) ->
+            skipLockBy = lockedBy
+            skipLockAt = lockedAt
+        }
+    }
+
     // Voice upload helper
     val voiceUploadAndSend: (File, Long) -> Unit = { file, durationMs ->
         if (!isUploadingVoice) {
@@ -226,6 +240,33 @@ fun VideoPlayerScreen(
                 )
                 volume = 1.0f
             }
+    }
+
+    // Skip helper: ±10s seek with lock enforcement
+    val handleSkip: (Boolean) -> Unit = { forward ->
+        val now = System.currentTimeMillis()
+        val lockAge = now - skipLockAt
+        val isLockedByOther = skipLockBy.isNotEmpty() && skipLockBy != currentUserId && lockAge < 5000
+
+        if (isLockedByOther) {
+            Toast.makeText(context, "Another user is skipping, wait a moment", Toast.LENGTH_SHORT).show()
+        } else {
+            // Set skip lock (resets timer for same user)
+            roomManager.setSkipLock(roomCode, currentUserId)
+
+            val delta = if (forward) 10_000L else -10_000L
+            val newPos = (exoPlayer.currentPosition + delta).coerceIn(0L, duration)
+            exoPlayer.seekTo(newPos)
+            exoPlayer.playWhenReady = false // Pause for sync
+
+            roomManager.updatePlaybackState(roomCode, PlaybackState(
+                isPlaying = false,
+                positionMs = newPos,
+                speed = currentSpeed,
+                lastUpdatedBy = currentUserId,
+                lastUpdatedAt = System.currentTimeMillis()
+            ))
+        }
     }
 
     // Audio ducking: mute during recording, near-mute during voice playback
@@ -560,6 +601,8 @@ fun VideoPlayerScreen(
                     exoPlayer.playWhenReady = !exoPlayer.playWhenReady
                 }
             },
+            onSkipBackward = { handleSkip(false) },
+            onSkipForward = { handleSkip(true) },
             onExitFullscreen = { isFullscreen = false },
             onExit = { showExitDialog = true },
             onReaction = { emoji ->
@@ -645,6 +688,8 @@ fun VideoPlayerScreen(
                                 exoPlayer.playWhenReady = !exoPlayer.playWhenReady
                             }
                         },
+                        onSkipBackward = { handleSkip(false) },
+                        onSkipForward = { handleSkip(true) },
                         onToggleSpeedMenu = { showSpeedMenu = !showSpeedMenu },
                         onDismissSpeedMenu = { showSpeedMenu = false },
                         onSpeedChange = { speed ->
@@ -770,6 +815,8 @@ private fun PortraitVideoOverlay(
     showSpeedMenu: Boolean,
     showReactions: Boolean,
     onPlayPause: () -> Unit,
+    onSkipBackward: () -> Unit,
+    onSkipForward: () -> Unit,
     onToggleSpeedMenu: () -> Unit,
     onDismissSpeedMenu: () -> Unit,
     onSpeedChange: (Float) -> Unit,
@@ -821,29 +868,67 @@ private fun PortraitVideoOverlay(
             }
         }
 
-        // Center play/pause
-        IconButton(
-            onClick = onPlayPause,
-            modifier = Modifier
-                .align(Alignment.Center)
-                .size(56.dp)
-                .clip(CircleShape)
-                .background(Color.White.copy(alpha = 0.2f))
+        // Center controls: skip back, play/pause, skip forward
+        Row(
+            modifier = Modifier.align(Alignment.Center),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(20.dp)
         ) {
-            Icon(
-                when {
-                    isVideoEnded -> Icons.Default.Replay
-                    isPlaying -> Icons.Default.Pause
-                    else -> Icons.Default.PlayArrow
-                },
-                contentDescription = when {
-                    isVideoEnded -> "Restart"
-                    isPlaying -> "Pause"
-                    else -> "Play"
-                },
-                tint = Color.White,
-                modifier = Modifier.size(32.dp)
-            )
+            // Skip backward 10s
+            IconButton(
+                onClick = onSkipBackward,
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(CircleShape)
+                    .background(Color.White.copy(alpha = 0.15f))
+            ) {
+                Icon(
+                    Icons.Default.Replay10,
+                    contentDescription = "Skip back 10s",
+                    tint = Color.White,
+                    modifier = Modifier.size(26.dp)
+                )
+            }
+
+            // Play/Pause
+            IconButton(
+                onClick = onPlayPause,
+                modifier = Modifier
+                    .size(56.dp)
+                    .clip(CircleShape)
+                    .background(Color.White.copy(alpha = 0.2f))
+            ) {
+                Icon(
+                    when {
+                        isVideoEnded -> Icons.Default.Replay
+                        isPlaying -> Icons.Default.Pause
+                        else -> Icons.Default.PlayArrow
+                    },
+                    contentDescription = when {
+                        isVideoEnded -> "Restart"
+                        isPlaying -> "Pause"
+                        else -> "Play"
+                    },
+                    tint = Color.White,
+                    modifier = Modifier.size(32.dp)
+                )
+            }
+
+            // Skip forward 10s
+            IconButton(
+                onClick = onSkipForward,
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(CircleShape)
+                    .background(Color.White.copy(alpha = 0.15f))
+            ) {
+                Icon(
+                    Icons.Default.Forward10,
+                    contentDescription = "Skip forward 10s",
+                    tint = Color.White,
+                    modifier = Modifier.size(26.dp)
+                )
+            }
         }
 
         // Bottom controls (speed, reactions, fullscreen — no seekbar)
@@ -986,6 +1071,8 @@ private fun FullscreenPlayer(
     onSeekStart: (Float) -> Unit,
     onSeekEnd: () -> Unit,
     onPlayPause: () -> Unit,
+    onSkipBackward: () -> Unit,
+    onSkipForward: () -> Unit,
     onExitFullscreen: () -> Unit,
     onExit: () -> Unit,
     onReaction: (String) -> Unit
@@ -1116,29 +1203,67 @@ private fun FullscreenPlayer(
                     }
                 }
 
-                // Center play/pause
-                IconButton(
-                    onClick = onPlayPause,
-                    modifier = Modifier
-                        .align(Alignment.Center)
-                        .size(72.dp)
-                        .clip(CircleShape)
-                        .background(Color.White.copy(alpha = 0.2f))
+                // Center controls: skip back, play/pause, skip forward
+                Row(
+                    modifier = Modifier.align(Alignment.Center),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(24.dp)
                 ) {
-                    Icon(
-                        when {
-                            isVideoEnded -> Icons.Default.Replay
-                            isPlaying -> Icons.Default.Pause
-                            else -> Icons.Default.PlayArrow
-                        },
-                        contentDescription = when {
-                            isVideoEnded -> "Restart"
-                            isPlaying -> "Pause"
-                            else -> "Play"
-                        },
-                        tint = Color.White,
-                        modifier = Modifier.size(40.dp)
-                    )
+                    // Skip backward 10s
+                    IconButton(
+                        onClick = onSkipBackward,
+                        modifier = Modifier
+                            .size(52.dp)
+                            .clip(CircleShape)
+                            .background(Color.White.copy(alpha = 0.15f))
+                    ) {
+                        Icon(
+                            Icons.Default.Replay10,
+                            contentDescription = "Skip back 10s",
+                            tint = Color.White,
+                            modifier = Modifier.size(30.dp)
+                        )
+                    }
+
+                    // Play/Pause
+                    IconButton(
+                        onClick = onPlayPause,
+                        modifier = Modifier
+                            .size(72.dp)
+                            .clip(CircleShape)
+                            .background(Color.White.copy(alpha = 0.2f))
+                    ) {
+                        Icon(
+                            when {
+                                isVideoEnded -> Icons.Default.Replay
+                                isPlaying -> Icons.Default.Pause
+                                else -> Icons.Default.PlayArrow
+                            },
+                            contentDescription = when {
+                                isVideoEnded -> "Restart"
+                                isPlaying -> "Pause"
+                                else -> "Play"
+                            },
+                            tint = Color.White,
+                            modifier = Modifier.size(40.dp)
+                        )
+                    }
+
+                    // Skip forward 10s
+                    IconButton(
+                        onClick = onSkipForward,
+                        modifier = Modifier
+                            .size(52.dp)
+                            .clip(CircleShape)
+                            .background(Color.White.copy(alpha = 0.15f))
+                    ) {
+                        Icon(
+                            Icons.Default.Forward10,
+                            contentDescription = "Skip forward 10s",
+                            tint = Color.White,
+                            modifier = Modifier.size(30.dp)
+                        )
+                    }
                 }
 
                 // Bottom controls

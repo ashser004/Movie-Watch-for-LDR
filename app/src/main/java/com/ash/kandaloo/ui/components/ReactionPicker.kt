@@ -16,6 +16,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -36,9 +37,9 @@ import androidx.compose.ui.unit.sp
 val quickReactions = listOf("❤️", "💕", "😉", "😘", "😂", "😙", "🥰")
 
 val extraReactions = listOf(
-    "😍", "🤩", "😊", "🥺", "😢", "😱", "🔥", "💯",
+    "😍", "🤩", "😁", "🥺", "😢", "😱", "🔥", "💯",
     "👏", "🎉", "💀", "😈", "🤭", "😏", "🫶", "💋",
-    "🌹", "✨", "🦋", "🍿", "👀", "😴", "🤤", "🫣"
+    "🌹", "✨", "🦋", "🤢", "👀", "😴", "🤤", "🫣"
 )
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -88,8 +89,8 @@ fun ReactionPicker(
                         )
                 ) {
                     Icon(
-                        imageVector = Icons.Default.Add,
-                        contentDescription = "More reactions",
+                        imageVector = if (showMore) Icons.Default.Close else Icons.Default.Add,
+                        contentDescription = if (showMore) "Close" else "More reactions",
                         tint = MaterialTheme.colorScheme.onPrimaryContainer
                     )
                 }
@@ -110,7 +111,6 @@ fun ReactionPicker(
                                 .clip(CircleShape)
                                 .clickable {
                                     onReactionSelected(emoji)
-                                    showMore = false
                                 },
                             contentAlignment = Alignment.Center
                         ) {

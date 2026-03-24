@@ -173,6 +173,30 @@ class RoomManager {
         roomsRef.child(roomCode).child("playbackState").setValue(state.toMap())
     }
 
+    // ─── Skip Lock (prevents multiple users skipping simultaneously) ───
+
+    fun setSkipLock(roomCode: String, userId: String) {
+        roomsRef.child(roomCode).child("skipLock").setValue(
+            mapOf(
+                "lockedBy" to userId,
+                "lockedAt" to ServerValue.TIMESTAMP
+            )
+        )
+    }
+
+    fun observeSkipLock(roomCode: String): Flow<Pair<String, Long>> = callbackFlow {
+        val listener = object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                val lockedBy = snapshot.child("lockedBy").getValue(String::class.java) ?: ""
+                val lockedAt = snapshot.child("lockedAt").getValue(Long::class.java) ?: 0L
+                trySend(Pair(lockedBy, lockedAt))
+            }
+            override fun onCancelled(error: DatabaseError) {}
+        }
+        roomsRef.child(roomCode).child("skipLock").addValueEventListener(listener)
+        awaitClose { roomsRef.child(roomCode).child("skipLock").removeEventListener(listener) }
+    }
+
     fun sendReaction(roomCode: String, emoji: String) {
         val user = currentUser ?: return
         val reaction = mapOf(
