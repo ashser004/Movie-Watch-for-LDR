@@ -1,5 +1,6 @@
 package com.ash.kandaloo.ui.screens
 
+import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -18,14 +19,18 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.PlayCircleOutline
+import androidx.compose.material.icons.filled.SystemUpdateAlt
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
@@ -35,6 +40,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -45,12 +51,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.ash.kandaloo.BuildConfig
 import com.ash.kandaloo.data.PreferencesManager
+import com.ash.kandaloo.service.AppUpdater
+import com.ash.kandaloo.service.UpdateChecker
 import com.google.firebase.auth.FirebaseAuth
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -65,6 +76,27 @@ fun SettingsScreen(
     val isDarkTheme by preferencesManager.isDarkTheme.collectAsState(initial = true)
     val isAutoPlay by preferencesManager.isAutoPlay.collectAsState(initial = false)
     var showLogoutDialog by remember { mutableStateOf(false) }
+
+    // ─── Update checker state ───
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val appUpdater = remember { AppUpdater(context, preferencesManager) }
+    val updateState by appUpdater.state.collectAsState()
+    val downloadProgress by appUpdater.progress.collectAsState()
+    val pendingTag by appUpdater.pendingTag.collectAsState()
+
+    var isChecking by remember { mutableStateOf(false) }
+    var lastCheckTime by remember { mutableStateOf(0L) }
+    var showUpdateDialog by remember { mutableStateOf(false) }
+    var latestUpdateUrl by remember { mutableStateOf("") }
+    var latestUpdateTag by remember { mutableStateOf("") }
+
+    // Restore pending download on first composition
+    LaunchedEffect(Unit) {
+        appUpdater.cleanupIfUpdated(BuildConfig.VERSION_NAME)
+        appUpdater.restorePendingDownload()
+    }
+
+    val currentVersion = BuildConfig.VERSION_NAME
 
     Scaffold(
         topBar = {
@@ -182,6 +214,140 @@ fun SettingsScreen(
                 }
             )
 
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // ─── Check for Updates Card ───
+            Card(
+                onClick = {
+                    when (updateState) {
+                        AppUpdater.UpdateState.DOWNLOADED -> {
+                            // Install the downloaded APK
+                            scope.launch { appUpdater.installUpdate() }
+                        }
+                        AppUpdater.UpdateState.DOWNLOADING -> {
+                            // Do nothing while downloading
+                        }
+                        else -> {
+                            // Check for updates with spam protection (15s cooldown)
+                            val now = System.currentTimeMillis()
+                            if (now - lastCheckTime < 15_000) {
+                                android.widget.Toast.makeText(
+                                    context, "Please wait before checking again",
+                                    android.widget.Toast.LENGTH_SHORT
+                                ).show()
+                                return@Card
+                            }
+                            if (isChecking) return@Card
+
+                            isChecking = true
+                            lastCheckTime = now
+                            android.widget.Toast.makeText(
+                                context, "Checking for updates...",
+                                android.widget.Toast.LENGTH_SHORT
+                            ).show()
+
+                            scope.launch {
+                                val result = UpdateChecker.check(currentVersion)
+                                isChecking = false
+                                if (result.hasUpdate) {
+                                    latestUpdateTag = result.latestTag
+                                    latestUpdateUrl = result.downloadUrl
+                                    showUpdateDialog = true
+                                } else {
+                                    android.widget.Toast.makeText(
+                                        context, "You're on the latest version ✓",
+                                        android.widget.Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                            }
+                        }
+                    }
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .animateContentSize(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                )
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            when (updateState) {
+                                AppUpdater.UpdateState.DOWNLOADED -> Icons.Default.Download
+                                else -> Icons.Default.SystemUpdateAlt
+                            },
+                            contentDescription = null,
+                            tint = when (updateState) {
+                                AppUpdater.UpdateState.DOWNLOADED -> MaterialTheme.colorScheme.primary
+                                else -> MaterialTheme.colorScheme.primary
+                            },
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(16.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = when (updateState) {
+                                    AppUpdater.UpdateState.DOWNLOADING -> "Downloading ${pendingTag}..."
+                                    AppUpdater.UpdateState.DOWNLOADED -> "Install Update ${pendingTag}"
+                                    else -> "Check for Updates"
+                                },
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Text(
+                                text = when (updateState) {
+                                    AppUpdater.UpdateState.DOWNLOADING -> "Please don't close the app"
+                                    AppUpdater.UpdateState.DOWNLOADED -> "Tap to install"
+                                    else -> "Current version: v${currentVersion}"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
+                        // Show spinner while checking
+                        if (isChecking) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+
+                    // Progress bar when downloading
+                    if (updateState == AppUpdater.UpdateState.DOWNLOADING && downloadProgress >= 0f) {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        LinearProgressIndicator(
+                            progress = { downloadProgress },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(6.dp)
+                                .clip(RoundedCornerShape(3.dp)),
+                            color = MaterialTheme.colorScheme.primary,
+                            trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f),
+                            strokeCap = StrokeCap.Round
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "${(downloadProgress * 100).toInt()}%",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.align(Alignment.End)
+                        )
+                    }
+                }
+            }
+
             Spacer(modifier = Modifier.height(24.dp))
 
             Text(
@@ -224,7 +390,7 @@ fun SettingsScreen(
 
             Spacer(modifier = Modifier.weight(1f))
 
-            // App info
+            // App info — dynamic version from BuildConfig
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -240,7 +406,7 @@ fun SettingsScreen(
                 )
                 Spacer(modifier = Modifier.width(4.dp))
                 Text(
-                    text = "KanDeloo v2.0 • Made with ❤️",
+                    text = "KanDaloo v${currentVersion} • Made with ❤\uFE0F",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.4f)
                 )
@@ -254,7 +420,7 @@ fun SettingsScreen(
             onDismissRequest = { showLogoutDialog = false },
             shape = RoundedCornerShape(24.dp),
             title = { Text("Sign Out?") },
-            text = { Text("You'll need to sign in again to use KanDeloo.") },
+            text = { Text("You'll need to sign in again to use KanDaloo.") },
             confirmButton = {
                 TextButton(onClick = {
                     showLogoutDialog = false
@@ -267,6 +433,33 @@ fun SettingsScreen(
             dismissButton = {
                 TextButton(onClick = { showLogoutDialog = false }) {
                     Text("Cancel")
+                }
+            }
+        )
+    }
+
+    // Update available dialog
+    if (showUpdateDialog) {
+        AlertDialog(
+            onDismissRequest = { showUpdateDialog = false },
+            shape = RoundedCornerShape(24.dp),
+            title = { Text("Update Available 🎉") },
+            text = {
+                Text("$latestUpdateTag is available! Download and install the new version?")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showUpdateDialog = false
+                    scope.launch {
+                        appUpdater.startDownload(latestUpdateUrl, latestUpdateTag)
+                    }
+                }) {
+                    Text("Download")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showUpdateDialog = false }) {
+                    Text("Later")
                 }
             }
         )
