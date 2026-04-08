@@ -80,7 +80,8 @@ echo ""
 echo "📦 Step 1/4: Fetching Media3 FFmpeg build files..."
 
 if [ ! -d "$MEDIA3_TEMP" ]; then
-    git clone --depth=1 --filter=blob:none --sparse \
+    # Pin to 1.5.1 to match the project's media3 dependency version
+    git clone --depth=1 --branch 1.5.1 --filter=blob:none --sparse \
         https://github.com/androidx/media.git "$MEDIA3_TEMP"
     cd "$MEDIA3_TEMP"
     git sparse-checkout set libraries/decoder_ffmpeg
