@@ -41,8 +41,8 @@ android {
         applicationId = "com.ash.kandaloo"
         minSdk = 29
         targetSdk = 36
-        versionCode = 25
-        versionName = "2.5"
+        versionCode = 26
+        versionName = "2.6"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
