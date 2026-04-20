@@ -71,7 +71,7 @@ ANDROID_ABI=29  # Matches the app's minSdk
 # ─── Decoders to enable ──────────────────────────────────────
 # AC3 + EAC3 are the KEY ones for the reported issue
 # Also including common audio codecs for future-proofing
-ENABLED_DECODERS=(ac3 eac3 aac aac_latm mp3 vorbis opus flac pcm_mulaw pcm_alaw)
+ENABLED_DECODERS=(hevc h264 ac3 eac3 aac aac_latm mp3 vorbis opus flac pcm_mulaw pcm_alaw)
 
 echo "✅ Decoders: ${ENABLED_DECODERS[*]}"
 
@@ -161,4 +161,4 @@ echo "🎉 Done! FFmpeg decoder module is ready."
 echo "   The ffmpeg-decoder/ module now contains prebuilt native libraries."
 echo "   You can now build the APK normally in Android Studio."
 echo ""
-echo "   Supported audio codecs: ${ENABLED_DECODERS[*]}"
+echo "   Supported codecs: ${ENABLED_DECODERS[*]}"
