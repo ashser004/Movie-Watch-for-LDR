@@ -1,21 +1,68 @@
-# Add project specific ProGuard rules here.
-# You can control the set of applied configuration files using the
-# proguardFiles setting in build.gradle.
-#
-# For more details, see
-#   http://developer.android.com/guide/developing/tools/proguard.html
+# ============================================================
+# KanDaloo ProGuard / R8 Rules
+# ============================================================
 
-# If your project uses WebView with JS, uncomment the following
-# and specify the fully qualified class name to the JavaScript interface
-# class:
-#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
-#   public *;
-#}
+# ─── FFmpeg Extension Renderers ──────────────────────────────
+# DefaultRenderersFactory loads these by full class name via Class.forName().
+# R8 MUST NOT rename or remove them or FFmpeg decoding silently fails.
+-keep class androidx.media3.decoder.ffmpeg.FfmpegAudioRenderer { *; }
+-keep class androidx.media3.decoder.ffmpeg.FfmpegVideoRenderer { *; }
+-keep class androidx.media3.decoder.ffmpeg.ExperimentalFfmpegVideoRenderer { *; }
+-keep class androidx.media3.decoder.ffmpeg.FfmpegLibrary { *; }
+-keepclassmembers class androidx.media3.decoder.ffmpeg.** { *; }
 
-# Uncomment this to preserve the line number information for
-# debugging stack traces.
-#-keepattributes SourceFile,LineNumberTable
+# ─── Media3 / ExoPlayer ──────────────────────────────────────
+# Keep all public Media3 APIs (renderers, extractors, etc.)
+-keep class androidx.media3.** { *; }
+-dontwarn androidx.media3.**
 
-# If you keep the line number information, uncomment this to
-# hide the original source file name.
-#-renamesourcefileattribute SourceFile
+# ─── Firebase ────────────────────────────────────────────────
+# Firebase ships its own rules inside the AAR, but keep core auth models too
+-keep class com.google.firebase.** { *; }
+-keep class com.google.android.gms.** { *; }
+-dontwarn com.google.firebase.**
+-dontwarn com.google.android.gms.**
+
+# ─── Google Identity / Credential Manager ────────────────────
+-keep class androidx.credentials.** { *; }
+-keep class com.google.android.libraries.identity.** { *; }
+
+# ─── Kotlin ──────────────────────────────────────────────────
+-keepattributes *Annotation*
+-keepattributes Signature
+-keepattributes SourceFile,LineNumberTable
+-keep class kotlin.** { *; }
+-keep class kotlinx.coroutines.** { *; }
+-dontwarn kotlin.**
+-dontwarn kotlinx.coroutines.**
+
+# ─── JNI ─────────────────────────────────────────────────────
+# Native methods accessed from JNI must not be renamed
+-keepclasseswithmembernames class * {
+    native <methods>;
+}
+
+# ─── Jetpack Compose ─────────────────────────────────────────
+# Compose ships its own rules. These extras protect runtime hooks.
+-keep class androidx.compose.** { *; }
+-dontwarn androidx.compose.**
+
+# ─── DataStore / Preferences ─────────────────────────────────
+-keep class androidx.datastore.** { *; }
+
+# ─── Coil ────────────────────────────────────────────────────
+-keep class coil.** { *; }
+-dontwarn coil.**
+
+# ─── General Android safety ──────────────────────────────────
+# Preserve Parcelable implementations (used by Android system)
+-keep class * implements android.os.Parcelable {
+    public static final android.os.Parcelable$Creator *;
+}
+
+# Preserve Serializable implementations
+-keepnames class * implements java.io.Serializable
+
+# Don't warn about missing classes from unused platforms
+-dontwarn java.awt.**
+-dontwarn javax.**

@@ -45,11 +45,19 @@ android {
         versionName = "2.5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        ndk {
+            // Only build for real ARM phones — excludes x86/x86_64 (PC emulators only)
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
     }
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // R8 shrinks unused code/resources and obfuscates class names
+            // ProGuard keep rules in proguard-rules.pro protect all reflection-loaded classes
+            isMinifyEnabled = true
+            isShrinkResources = true
             if (hasReleaseSigning) {
                 signingConfig = signingConfigs.getByName("release")
             }
@@ -69,6 +77,13 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+    }
+
+    packaging {
+        jniLibs {
+            // Prevents double-compression of native .so files — smaller install size, faster startup
+            useLegacyPackaging = false
+        }
     }
 }
 
