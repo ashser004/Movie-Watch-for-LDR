@@ -101,7 +101,10 @@ import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.Renderer
+import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.video.VideoRendererEventListener
 import androidx.media3.ui.PlayerView
 import com.ash.kandaloo.data.ChatMessage
 import com.ash.kandaloo.data.PlaybackState
@@ -207,10 +210,55 @@ fun VideoPlayerScreen(
     }
 
     val exoPlayer = remember {
-        // Enable software decoders for AC3/EAC3/DTS/etc. that many devices lack hardware support for
-        val renderersFactory = DefaultRenderersFactory(context)
-            .setEnableDecoderFallback(true)
-            .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
+        // Custom RenderersFactory: overrides buildVideoRenderers to inject a MediaCodecSelector
+        // that ALWAYS includes software decoders alongside hardware ones.
+        // Why: Redmi 14C has a hardware HEVC decoder that doesn't support Main 10 profile.
+        //      The hardware decoder is returned by DEFAULT selector, gets picked, but fails at init.
+        //      By including software decoders (c2.android.hevc.decoder) in the list,
+        //      setEnableDecoderFallback(true) can fall back to them when hardware init fails.
+        //      On devices WITH hardware Main 10 support (like iQOO), hardware is tried first
+        //      and succeeds — software is never used. No performance impact.
+        val renderersFactory = object : DefaultRenderersFactory(context) {
+            override fun buildVideoRenderers(
+                context: android.content.Context,
+                extensionRendererMode: Int,
+                mediaCodecSelector: MediaCodecSelector,
+                enableDecoderFallback: Boolean,
+                eventHandler: android.os.Handler,
+                eventListener: VideoRendererEventListener,
+                allowedVideoJoiningTimeMs: Long,
+                out: ArrayList<Renderer>
+            ) {
+                // Always return ALL available decoders (hardware + software)
+                // ExoPlayer tries them in order; setEnableDecoderFallback(true) ensures
+                // it moves to the next if one fails during init
+                val allDecodersSelector = MediaCodecSelector { mimeType, requiresSecureDecoder, requiresTunnelingDecoder ->
+                    // Get the default list (usually hardware-only when secure/tunneling flags match)
+                    val defaultList = MediaCodecSelector.DEFAULT.getDecoderInfos(
+                        mimeType, requiresSecureDecoder, requiresTunnelingDecoder
+                    )
+                    // Also get the full unrestricted list (includes software decoders)
+                    val fullList = MediaCodecSelector.DEFAULT.getDecoderInfos(
+                        mimeType, false, false
+                    )
+                    // Merge: default list first (hardware priority), then any extras from full list
+                    val merged = defaultList.toMutableList()
+                    for (info in fullList) {
+                        if (!merged.contains(info)) {
+                            merged.add(info)
+                        }
+                    }
+                    merged
+                }
+                super.buildVideoRenderers(
+                    context, extensionRendererMode, allDecodersSelector,
+                    true, // force enableDecoderFallback regardless of outer setting
+                    eventHandler, eventListener,
+                    allowedVideoJoiningTimeMs, out
+                )
+            }
+        }.setEnableDecoderFallback(true)
+         .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
 
         // Configure HTTP data source with proper timeouts for large file streaming
         val httpDataSourceFactory = DefaultHttpDataSource.Factory()

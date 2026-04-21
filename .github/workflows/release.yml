@@ -32,7 +32,7 @@ jobs:
             ffmpeg-decoder/src/main/java/androidx/media3/decoder/ffmpeg/Ffmpeg*.java
             ffmpeg-decoder/src/main/java/androidx/media3/decoder/ffmpeg/ExperimentalFfmpegVideoRenderer.java
             ffmpeg-decoder/src/main/java/androidx/media3/decoder/ffmpeg/package-info.java
-          key: ffmpeg-ndk26d-v4
+          key: ffmpeg-ndk26d-v5
 
       - name: Set up Android SDK + NDK
         if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
