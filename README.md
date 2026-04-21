@@ -11,8 +11,10 @@ The app focuses on **low latency**, **minimal data usage**, and **simple local v
 
 * Synchronized video playback between users
 * Watch local videos together in real time
-* Live chat during playback
+* Live chat and **Voice Notes** during playback
 * Emoji reactions while watching
+* Synchronized video controls including **Play, Pause, and Skip (+/- 10s)**
+* **Built-in Auto-Update** to keep the app up to date automatically
 * Very low latency synchronization
 * Minimal internet data usage
 * Works with locally stored videos
@@ -129,14 +131,19 @@ The video file itself **is never uploaded or streamed**, which keeps data usage 
 
 ---
 
+## Device Requirements & Media Support
+
+KanDeloo relies on your phone's native hardware decoders to play videos efficiently without draining your battery. 
+* **Supported Devices:** We focus on delivering a great experience for modern smartphones running **Android 12 and above**.
+* **Note on High-Quality Formats (HEVC/H.265):** Complex, high-bitdepth video files like **10-bit HEVC (Main 10)** require specialized hardware decoding chips. While KanDeloo is built to smoothly play any file your phone supports, some budget or older Android devices physically lack the processor necessary to decode these high-end, cinema-grade files. If you encounter a "Codec not supported" issue, it means the specific video file exceeds the hardware playback limits of your device.
+
+---
+
 ## Future Roadmap
 
 KanDeloo is an evolving project, and several improvements are planned for upcoming versions.
 
 ### Planned Features
-
-* **In-App Voice Call**
-  Users will be able to talk to each other directly inside the app while watching videos together.
 
 * **Improved synchronization algorithms**
   Further reduction of playback latency.
