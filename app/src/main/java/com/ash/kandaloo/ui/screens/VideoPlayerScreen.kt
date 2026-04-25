@@ -177,7 +177,7 @@ fun VideoPlayerScreen(
     }
 
     // Voice upload helper
-    val voiceUploadAndSend: (File, Long) -> Unit = { file, durationMs ->
+    val voiceUploadAndSend: (File, Long, ChatMessage?) -> Unit = { file, durationMs, replyTo ->
         if (!isUploadingVoice) {
             isUploadingVoice = true
             Toast.makeText(context, "Sending voice note...", Toast.LENGTH_SHORT).show()
@@ -191,7 +191,7 @@ fun VideoPlayerScreen(
                         cloudName = cloudName,
                         folder = folder,
                         onSuccess = { audioUrl ->
-                            roomManager.sendVoiceMessage(roomCode, audioUrl, durationMs)
+                            roomManager.sendVoiceMessage(roomCode, audioUrl, durationMs, replyTo)
                             file.delete()
                             isUploadingVoice = false
                         },
@@ -599,7 +599,7 @@ fun VideoPlayerScreen(
             visibleReactions = visibleReactions.toList(),
             floatingMessages = floatingMessages.toList(),
             voicePlayerManager = voicePlayerManager,
-            onSendVoice = voiceUploadAndSend,
+            onSendVoice = { file, durationMs -> voiceUploadAndSend(file, durationMs, null) },
             onToggleControls = {
                 showControls = !showControls
                 showReactions = false
@@ -815,11 +815,13 @@ fun VideoPlayerScreen(
             ChatSection(
                 messages = chatMessages.toList(),
                 currentUserId = currentUserId,
-                onSendMessage = { message ->
-                    roomManager.sendChatMessage(roomCode, message)
+                onSendMessage = { message, replyTo ->
+                    roomManager.sendChatMessage(roomCode, message, replyTo)
                 },
                 voicePlayerManager = voicePlayerManager,
-                onSendVoice = voiceUploadAndSend,
+                onSendVoice = { file, durationMs, replyTo ->
+                    voiceUploadAndSend(file, durationMs, replyTo)
+                },
                 onRecordingStateChanged = { isPortraitRecording = it },
                 modifier = Modifier.weight(1f)
             )

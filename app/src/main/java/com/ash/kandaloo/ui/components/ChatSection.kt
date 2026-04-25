@@ -6,11 +6,15 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,6 +25,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -33,7 +38,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Reply
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Pause
@@ -51,6 +58,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -61,11 +69,17 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -74,6 +88,7 @@ import com.ash.kandaloo.service.VoicePlayerManager
 import com.ash.kandaloo.service.VoiceRecorder
 import kotlinx.coroutines.delay
 import java.io.File
+import kotlin.math.roundToInt
 
 /** Recording state machine for the chat input area */
 private enum class VoiceInputState {
@@ -86,9 +101,9 @@ private enum class VoiceInputState {
 fun ChatSection(
     messages: List<ChatMessage>,
     currentUserId: String,
-    onSendMessage: (String) -> Unit,
+    onSendMessage: (String, ChatMessage?) -> Unit,
     voicePlayerManager: VoicePlayerManager,
-    onSendVoice: ((File, Long) -> Unit)? = null,
+    onSendVoice: ((File, Long, ChatMessage?) -> Unit)? = null,
     onRecordingStateChanged: ((Boolean) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
@@ -97,6 +112,7 @@ fun ChatSection(
     var messageText by remember { mutableStateOf("") }
     val focusManager = LocalFocusManager.current
     var isTextFieldFocused by remember { mutableStateOf(false) }
+    var replyingTo by remember { mutableStateOf<ChatMessage?>(null) }
 
     // Voice recording state
     var voiceState by remember { mutableStateOf(VoiceInputState.IDLE) }
@@ -166,20 +182,86 @@ fun ChatSection(
         ) {
             item { Spacer(modifier = Modifier.height(8.dp)) }
             items(messages) { msg ->
-                if (msg.type == "voice") {
-                    VoiceNoteBubble(
-                        message = msg,
-                        isCurrentUser = msg.senderId == currentUserId,
-                        voicePlayerManager = voicePlayerManager
-                    )
+                val isSystem = msg.type == "join" || msg.type == "leave" || msg.type == "system"
+                if (isSystem) {
+                    // System messages are not swipeable
+                    ChatBubble(message = msg, isCurrentUser = msg.senderId == currentUserId)
                 } else {
-                    ChatBubble(
-                        message = msg,
-                        isCurrentUser = msg.senderId == currentUserId
-                    )
+                    SwipeableMessageWrapper(
+                        onSwipeToReply = { replyingTo = msg }
+                    ) {
+                        if (msg.type == "voice") {
+                            VoiceNoteBubble(
+                                message = msg,
+                                isCurrentUser = msg.senderId == currentUserId,
+                                voicePlayerManager = voicePlayerManager
+                            )
+                        } else {
+                            ChatBubble(
+                                message = msg,
+                                isCurrentUser = msg.senderId == currentUserId
+                            )
+                        }
+                    }
                 }
             }
             item { Spacer(modifier = Modifier.height(4.dp)) }
+        }
+        // ─── Reply preview bar ───
+        AnimatedVisibility(
+            visible = replyingTo != null,
+            enter = expandVertically() + fadeIn(),
+            exit = shrinkVertically() + fadeOut()
+        ) {
+            replyingTo?.let { reply ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp)
+                        .clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // Accent bar
+                    Box(
+                        modifier = Modifier
+                            .width(3.dp)
+                            .height(32.dp)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(MaterialTheme.colorScheme.primary)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = reply.senderName,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontSize = 11.sp
+                        )
+                        Text(
+                            text = if (reply.type == "voice") "\uD83C\uDFA4 Voice message" else reply.message,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            fontSize = 12.sp
+                        )
+                    }
+                    IconButton(
+                        onClick = { replyingTo = null },
+                        modifier = Modifier.size(28.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Close,
+                            contentDescription = "Cancel reply",
+                            tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
+            }
         }
 
         // ─── Input area — switches based on voice state ───
@@ -222,8 +304,9 @@ fun ChatSection(
                             keyboardActions = KeyboardActions(
                                 onSend = {
                                     if (messageText.isNotBlank()) {
-                                        onSendMessage(messageText.trim())
+                                        onSendMessage(messageText.trim(), replyingTo)
                                         messageText = ""
+                                        replyingTo = null
                                         focusManager.clearFocus()
                                     }
                                 }
@@ -240,8 +323,9 @@ fun ChatSection(
                                 if (showSend) {
                                     // Send text message
                                     if (messageText.isNotBlank()) {
-                                        onSendMessage(messageText.trim())
+                                        onSendMessage(messageText.trim(), replyingTo)
                                         messageText = ""
+                                        replyingTo = null
                                         focusManager.clearFocus()
                                     }
                                 } else {
@@ -391,7 +475,8 @@ fun ChatSection(
                                 recordingElapsedMs = 0L
                                 if (result != null) {
                                     voiceState = VoiceInputState.IDLE
-                                    onSendVoice?.invoke(result.file, result.durationMs)
+                                    onSendVoice?.invoke(result.file, result.durationMs, replyingTo)
+                                    replyingTo = null
                                 } else {
                                     Toast.makeText(context, "Recording failed", Toast.LENGTH_SHORT).show()
                                     voiceState = VoiceInputState.IDLE
@@ -513,7 +598,8 @@ fun ChatSection(
                             onClick = {
                                 voicePlayerManager.stop()
                                 recordedFile?.let { file ->
-                                    onSendVoice?.invoke(file, recordedDurationMs)
+                                    onSendVoice?.invoke(file, recordedDurationMs, replyingTo)
+                                    replyingTo = null
                                 }
                                 recordedFile = null
                                 recordedDurationMs = 0L
@@ -604,15 +690,161 @@ fun ChatBubble(
                     )
                     .padding(horizontal = 14.dp, vertical = 9.dp)
             ) {
-                Text(
-                    text = message.message,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = if (isCurrentUser)
-                        MaterialTheme.colorScheme.onPrimary
-                    else
-                        MaterialTheme.colorScheme.onSurface
+                Column {
+                    // Reply context strip
+                    if (message.replyToId.isNotEmpty()) {
+                        ReplyContextStrip(
+                            senderName = message.replyToSenderName,
+                            messagePreview = message.replyToMessage,
+                            isCurrentUser = isCurrentUser
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                    }
+                    Text(
+                        text = message.message,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (isCurrentUser)
+                            MaterialTheme.colorScheme.onPrimary
+                        else
+                            MaterialTheme.colorScheme.onSurface
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** Reply context strip shown inside bubbles that are replies */
+@Composable
+fun ReplyContextStrip(
+    senderName: String,
+    messagePreview: String,
+    isCurrentUser: Boolean
+) {
+    val accentColor = if (isCurrentUser)
+        Color.White.copy(alpha = 0.6f)
+    else
+        MaterialTheme.colorScheme.primary
+
+    val bgColor = if (isCurrentUser)
+        Color.White.copy(alpha = 0.12f)
+    else
+        MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(6.dp))
+            .background(bgColor)
+            .padding(horizontal = 8.dp, vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .width(2.5.dp)
+                .height(24.dp)
+                .clip(RoundedCornerShape(1.dp))
+                .background(accentColor)
+        )
+        Spacer(modifier = Modifier.width(6.dp))
+        Column {
+            Text(
+                text = senderName,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                color = accentColor,
+                fontSize = 10.sp
+            )
+            Text(
+                text = messagePreview,
+                style = MaterialTheme.typography.bodySmall,
+                color = if (isCurrentUser)
+                    Color.White.copy(alpha = 0.5f)
+                else
+                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                fontSize = 11.sp
+            )
+        }
+    }
+}
+
+/** Wraps a message bubble with horizontal swipe-to-reply gesture */
+@Composable
+fun SwipeableMessageWrapper(
+    onSwipeToReply: () -> Unit,
+    content: @Composable () -> Unit
+) {
+    val haptic = LocalHapticFeedback.current
+    val density = LocalDensity.current
+    val swipeThresholdPx = with(density) { 72.dp.toPx() }
+    val maxSwipePx = with(density) { 100.dp.toPx() }
+    var offsetX by remember { mutableFloatStateOf(0f) }
+    var hasTriggered by remember { mutableStateOf(false) }
+
+    Box(modifier = Modifier.fillMaxWidth()) {
+        // Reply arrow icon (appears behind the bubble during swipe)
+        if (offsetX > 8f) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .padding(start = 8.dp)
+                    .size(28.dp)
+                    .clip(CircleShape)
+                    .background(
+                        MaterialTheme.colorScheme.primary.copy(
+                            alpha = (offsetX / swipeThresholdPx).coerceIn(0f, 1f) * 0.3f
+                        )
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.AutoMirrored.Filled.Reply,
+                    contentDescription = "Reply",
+                    tint = MaterialTheme.colorScheme.primary.copy(
+                        alpha = (offsetX / swipeThresholdPx).coerceIn(0.3f, 1f)
+                    ),
+                    modifier = Modifier.size(18.dp)
                 )
             }
+        }
+
+        // The actual bubble content, offset by drag
+        Box(
+            modifier = Modifier
+                .offset { IntOffset(offsetX.roundToInt(), 0) }
+                .pointerInput(Unit) {
+                    detectHorizontalDragGestures(
+                        onDragStart = {
+                            hasTriggered = false
+                        },
+                        onHorizontalDrag = { _, dragAmount ->
+                            // Only allow right swipe (positive direction)
+                            val newOffset = (offsetX + dragAmount).coerceIn(0f, maxSwipePx)
+                            offsetX = newOffset
+
+                            // Trigger haptic at threshold crossing
+                            if (!hasTriggered && offsetX >= swipeThresholdPx) {
+                                hasTriggered = true
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            }
+                        },
+                        onDragEnd = {
+                            if (hasTriggered) {
+                                onSwipeToReply()
+                            }
+                            offsetX = 0f
+                            hasTriggered = false
+                        },
+                        onDragCancel = {
+                            offsetX = 0f
+                            hasTriggered = false
+                        }
+                    )
+                }
+        ) {
+            content()
         }
     }
 }

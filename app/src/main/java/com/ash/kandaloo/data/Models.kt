@@ -102,7 +102,10 @@ data class ChatMessage(
     val timestamp: Long = 0L,
     val type: String = "chat", // "chat", "voice", "join", "leave", "system"
     val audioUrl: String = "",
-    val audioDurationMs: Long = 0L
+    val audioDurationMs: Long = 0L,
+    val replyToId: String = "",
+    val replyToSenderName: String = "",
+    val replyToMessage: String = ""
 ) {
     fun toMap(): Map<String, Any> = buildMap {
         put("senderId", senderId)
@@ -112,6 +115,9 @@ data class ChatMessage(
         put("type", type)
         if (audioUrl.isNotEmpty()) put("audioUrl", audioUrl)
         if (audioDurationMs > 0) put("audioDurationMs", audioDurationMs)
+        if (replyToId.isNotEmpty()) put("replyToId", replyToId)
+        if (replyToSenderName.isNotEmpty()) put("replyToSenderName", replyToSenderName)
+        if (replyToMessage.isNotEmpty()) put("replyToMessage", replyToMessage)
     }
 
     companion object {
@@ -123,7 +129,10 @@ data class ChatMessage(
             timestamp = (map["timestamp"] as? Long) ?: (map["timestamp"] as? Number)?.toLong() ?: 0L,
             type = (map["type"] as? String) ?: "chat",
             audioUrl = (map["audioUrl"] as? String) ?: "",
-            audioDurationMs = (map["audioDurationMs"] as? Long) ?: (map["audioDurationMs"] as? Number)?.toLong() ?: 0L
+            audioDurationMs = (map["audioDurationMs"] as? Long) ?: (map["audioDurationMs"] as? Number)?.toLong() ?: 0L,
+            replyToId = (map["replyToId"] as? String) ?: "",
+            replyToSenderName = (map["replyToSenderName"] as? String) ?: "",
+            replyToMessage = (map["replyToMessage"] as? String) ?: ""
         )
     }
 }

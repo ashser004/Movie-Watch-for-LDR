@@ -330,15 +330,20 @@ class RoomManager {
     }
 
     // Chat methods
-    fun sendChatMessage(roomCode: String, message: String) {
+    fun sendChatMessage(roomCode: String, message: String, replyTo: ChatMessage? = null) {
         val user = currentUser ?: return
-        val chatMsg = mapOf(
-            "senderId" to user.uid,
-            "senderName" to (user.displayName ?: ""),
-            "message" to message,
-            "timestamp" to ServerValue.TIMESTAMP,
-            "type" to "chat"
-        )
+        val chatMsg = buildMap<String, Any> {
+            put("senderId", user.uid)
+            put("senderName", user.displayName ?: "")
+            put("message", message)
+            put("timestamp", ServerValue.TIMESTAMP)
+            put("type", "chat")
+            if (replyTo != null) {
+                put("replyToId", replyTo.id)
+                put("replyToSenderName", replyTo.senderName)
+                put("replyToMessage", if (replyTo.type == "voice") "\uD83C\uDFA4 Voice message" else replyTo.message)
+            }
+        }
         roomsRef.child(roomCode).child("chat").push().setValue(chatMsg)
     }
 
@@ -501,17 +506,22 @@ class RoomManager {
         const val WORKER_URL = "https://kandeloo.ashmithb796.workers.dev/sign"
     }
 
-    fun sendVoiceMessage(roomCode: String, audioUrl: String, durationMs: Long) {
+    fun sendVoiceMessage(roomCode: String, audioUrl: String, durationMs: Long, replyTo: ChatMessage? = null) {
         val user = currentUser ?: return
-        val voiceMsg = mapOf(
-            "senderId" to user.uid,
-            "senderName" to (user.displayName ?: ""),
-            "message" to "🎤 Voice message",
-            "timestamp" to ServerValue.TIMESTAMP,
-            "type" to "voice",
-            "audioUrl" to audioUrl,
-            "audioDurationMs" to durationMs
-        )
+        val voiceMsg = buildMap<String, Any> {
+            put("senderId", user.uid)
+            put("senderName", user.displayName ?: "")
+            put("message", "\uD83C\uDFA4 Voice message")
+            put("timestamp", ServerValue.TIMESTAMP)
+            put("type", "voice")
+            put("audioUrl", audioUrl)
+            put("audioDurationMs", durationMs)
+            if (replyTo != null) {
+                put("replyToId", replyTo.id)
+                put("replyToSenderName", replyTo.senderName)
+                put("replyToMessage", if (replyTo.type == "voice") "\uD83C\uDFA4 Voice message" else replyTo.message)
+            }
+        }
         roomsRef.child(roomCode).child("chat").push().setValue(voiceMsg)
     }
 

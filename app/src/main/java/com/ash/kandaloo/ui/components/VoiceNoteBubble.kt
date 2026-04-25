@@ -76,7 +76,7 @@ fun VoiceNoteBubble(
             )
         }
 
-        Row(
+        Column(
             modifier = Modifier
                 .widthIn(min = 180.dp, max = 280.dp)
                 .clip(
@@ -93,57 +93,69 @@ fun VoiceNoteBubble(
                     else
                         MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)
                 )
-                .padding(horizontal = 8.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically
+                .padding(horizontal = 8.dp, vertical = 8.dp)
         ) {
-            // Play/Pause button
-            IconButton(
-                onClick = {
-                    if (message.audioUrl.isNotEmpty()) {
-                        voicePlayerManager.play(message.audioUrl)
-                    }
-                },
-                modifier = Modifier
-                    .size(36.dp)
-                    .clip(CircleShape)
-                    .background(
-                        if (isCurrentUser)
-                            Color.White.copy(alpha = 0.25f)
-                        else
-                            MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
-                    )
-            ) {
-                Icon(
-                    if (isThisPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                    contentDescription = if (isThisPlaying) "Pause" else "Play",
-                    tint = if (isCurrentUser) Color.White else MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(20.dp)
+            // Reply context strip
+            if (message.replyToId.isNotEmpty()) {
+                ReplyContextStrip(
+                    senderName = message.replyToSenderName,
+                    messagePreview = message.replyToMessage,
+                    isCurrentUser = isCurrentUser
                 )
+                Spacer(modifier = Modifier.height(6.dp))
             }
 
-            Spacer(modifier = Modifier.width(8.dp))
+            // Audio controls row
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // Play/Pause button
+                IconButton(
+                    onClick = {
+                        if (message.audioUrl.isNotEmpty()) {
+                            voicePlayerManager.play(message.audioUrl)
+                        }
+                    },
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(
+                            if (isCurrentUser)
+                                Color.White.copy(alpha = 0.25f)
+                            else
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
+                        )
+                ) {
+                    Icon(
+                        if (isThisPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                        contentDescription = if (isThisPlaying) "Pause" else "Play",
+                        tint = if (isCurrentUser) Color.White else MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
 
-            // Waveform visualization
-            WaveformBar(
-                progress = if (isThisPlaying) progress else 0f,
-                isCurrentUser = isCurrentUser,
-                modifier = Modifier
-                    .weight(1f)
-                    .height(28.dp)
-            )
+                Spacer(modifier = Modifier.width(8.dp))
 
-            Spacer(modifier = Modifier.width(8.dp))
+                // Waveform visualization
+                WaveformBar(
+                    progress = if (isThisPlaying) progress else 0f,
+                    isCurrentUser = isCurrentUser,
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(28.dp)
+                )
 
-            // Duration
-            Text(
-                text = formatVoiceDuration(message.audioDurationMs),
-                style = MaterialTheme.typography.labelSmall,
-                color = if (isCurrentUser)
-                    Color.White.copy(alpha = 0.8f)
-                else
-                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
-                fontSize = 11.sp
-            )
+                Spacer(modifier = Modifier.width(8.dp))
+
+                // Duration
+                Text(
+                    text = formatVoiceDuration(message.audioDurationMs),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (isCurrentUser)
+                        Color.White.copy(alpha = 0.8f)
+                    else
+                        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                    fontSize = 11.sp
+                )
+            }
         }
     }
 }
