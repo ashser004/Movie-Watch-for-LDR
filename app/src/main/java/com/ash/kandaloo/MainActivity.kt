@@ -39,8 +39,9 @@ class MainActivity : ComponentActivity() {
 
         requestNotificationPermissionIfNeeded()
 
-        val preferencesManager = PreferencesManager(applicationContext)
-        val roomManager = RoomManager()
+        val app = application as KanDalooApplication
+        val preferencesManager = app.container.preferencesManager
+        val roomManager = app.container.roomManager
 
         setContent {
             val isDarkTheme by preferencesManager.isDarkTheme.collectAsState(initial = true)

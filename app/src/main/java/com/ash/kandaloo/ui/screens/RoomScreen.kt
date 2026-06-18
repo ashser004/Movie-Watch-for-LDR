@@ -75,6 +75,7 @@ import com.ash.kandaloo.data.VideoMetadata
 import com.ash.kandaloo.service.RoomManager
 import com.ash.kandaloo.service.VideoMetadataExtractor
 import com.google.firebase.auth.FirebaseAuth
+import com.ash.kandaloo.ui.components.UserAvatar
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -429,19 +430,27 @@ fun RoomScreen(
                         onClick = {
                             if (videoUri != null) {
                                 val allAutoPlay = members.values.all { it.autoPlay }
-                                roomManager.startParty(roomCode, allAutoPlay)
-                                if (!allAutoPlay) {
-                                    roomManager.sendSystemMessage(
-                                        roomCode,
-                                        "Auto-play is off — not all members have it enabled",
-                                        "system"
-                                    )
-                                    scope.launch {
-                                        snackbarHostState.showSnackbar("Not all members have auto-play enabled")
+                                roomManager.startParty(roomCode, allAutoPlay,
+                                    onSuccess = {
+                                        if (!allAutoPlay) {
+                                            roomManager.sendSystemMessage(
+                                                roomCode,
+                                                "Auto-play is off — not all members have it enabled",
+                                                "system"
+                                            )
+                                            scope.launch {
+                                                snackbarHostState.showSnackbar("Not all members have auto-play enabled")
+                                            }
+                                        }
+                                        hasNavigatedToPlayer = true
+                                        onStartParty(videoUri!!)
+                                    },
+                                    onFailure = { err ->
+                                        scope.launch {
+                                            snackbarHostState.showSnackbar("Failed to start party: $err")
+                                        }
                                     }
-                                }
-                                hasNavigatedToPlayer = true
-                                onStartParty(videoUri!!)
+                                )
                             }
                         },
                         enabled = allReady && videoUri != null,
@@ -504,27 +513,11 @@ fun MemberCard(
             verticalAlignment = Alignment.CenterVertically
         ) {
             // Avatar
-            Box(
-                modifier = Modifier
-                    .size(44.dp)
-                    .clip(CircleShape)
-                    .background(
-                        Brush.linearGradient(
-                            colors = listOf(
-                                MaterialTheme.colorScheme.primary,
-                                MaterialTheme.colorScheme.tertiary
-                            )
-                        )
-                    ),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = member.displayName.firstOrNull()?.uppercase() ?: "?",
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onPrimary,
-                    fontSize = 18.sp
-                )
-            }
+            UserAvatar(
+                photoUrl = member.photoUrl,
+                displayName = member.displayName,
+                size = 44.dp
+            )
 
             Spacer(modifier = Modifier.width(12.dp))
 

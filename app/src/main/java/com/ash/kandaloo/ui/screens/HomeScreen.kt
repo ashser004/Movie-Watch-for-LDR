@@ -74,6 +74,7 @@ import com.ash.kandaloo.service.RoomManager
 import com.ash.kandaloo.ui.theme.GradientEnd
 import com.ash.kandaloo.ui.theme.GradientStart
 import com.google.firebase.auth.FirebaseAuth
+import com.ash.kandaloo.ui.components.UserAvatar
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -148,27 +149,11 @@ fun HomeScreen(
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
                         // User avatar
-                        Box(
-                            modifier = Modifier
-                                .size(80.dp)
-                                .clip(CircleShape)
-                                .background(
-                                    Brush.linearGradient(
-                                        colors = listOf(
-                                            MaterialTheme.colorScheme.primary,
-                                            MaterialTheme.colorScheme.secondary
-                                        )
-                                    )
-                                ),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = user?.displayName?.firstOrNull()?.uppercase() ?: "?",
-                                fontSize = 32.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onPrimary
-                            )
-                        }
+                        UserAvatar(
+                            photoUrl = user?.photoUrl?.toString(),
+                            displayName = user?.displayName ?: "User",
+                            size = 80.dp
+                        )
 
                         Spacer(modifier = Modifier.height(16.dp))
 

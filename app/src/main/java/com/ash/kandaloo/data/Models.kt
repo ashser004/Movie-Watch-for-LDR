@@ -144,3 +144,11 @@ data class RejoinInfo(
     val isHost: Boolean = false,
     val videoUriString: String = ""
 )
+
+data class CloudinarySignatureResult(
+    val signature: String,
+    val timestamp: Long,
+    val apiKey: String,
+    val cloudName: String,
+    val folder: String
+)

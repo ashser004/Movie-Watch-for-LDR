@@ -61,6 +61,7 @@ import com.ash.kandaloo.data.PreferencesManager
 import com.ash.kandaloo.service.AppUpdater
 import com.ash.kandaloo.service.UpdateChecker
 import com.google.firebase.auth.FirebaseAuth
+import com.ash.kandaloo.ui.components.UserAvatar
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -142,27 +143,11 @@ fun SettingsScreen(
                         .padding(20.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(56.dp)
-                            .clip(CircleShape)
-                            .background(
-                                Brush.linearGradient(
-                                    colors = listOf(
-                                        MaterialTheme.colorScheme.primary,
-                                        MaterialTheme.colorScheme.secondary
-                                    )
-                                )
-                            ),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = user?.displayName?.firstOrNull()?.uppercase() ?: "?",
-                            fontSize = 24.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onPrimary
-                        )
-                    }
+                    UserAvatar(
+                        photoUrl = user?.photoUrl?.toString(),
+                        displayName = user?.displayName ?: "User",
+                        size = 56.dp
+                    )
 
                     Spacer(modifier = Modifier.width(16.dp))
 
@@ -424,6 +409,10 @@ fun SettingsScreen(
             confirmButton = {
                 TextButton(onClick = {
                     showLogoutDialog = false
+                    // Clear voice note cache directories
+                    val cacheDir = context.cacheDir
+                    java.io.File(cacheDir, "voice_cache").deleteRecursively()
+                    java.io.File(cacheDir, "voice_recordings").deleteRecursively()
                     FirebaseAuth.getInstance().signOut()
                     onLogout()
                 }) {

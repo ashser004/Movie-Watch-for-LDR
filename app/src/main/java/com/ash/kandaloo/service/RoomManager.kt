@@ -6,6 +6,7 @@ import com.ash.kandaloo.data.PlaybackState
 import com.ash.kandaloo.data.ReactionEvent
 import com.ash.kandaloo.data.RejoinInfo
 import com.ash.kandaloo.data.VideoMetadata
+import com.ash.kandaloo.data.CloudinarySignatureResult
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.database.DataSnapshot
 import com.google.firebase.database.DatabaseError
@@ -21,6 +22,11 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+import com.google.android.gms.tasks.Task
 
 class RoomManager {
 
@@ -57,7 +63,8 @@ class RoomManager {
                 "photoUrl" to (user.photoUrl?.toString() ?: ""),
                 "isReady" to true,
                 "hasMatchingFile" to false
-            )
+            ),
+            "memberHistory/${user.uid}" to true
         )
 
         roomsRef.child(roomCode).updateChildren(roomData)
@@ -100,8 +107,12 @@ class RoomManager {
                 "hasMatchingFile" to false
             )
 
-            roomsRef.child(roomCode).child("members").child(user.uid)
-                .setValue(memberData)
+            val updates = mapOf(
+                "members/${user.uid}" to memberData,
+                "memberHistory/${user.uid}" to true
+            )
+
+            roomsRef.child(roomCode).updateChildren(updates)
                 .addOnSuccessListener {
                     sendJoinNotification(roomCode)
                     onSuccess()
@@ -144,7 +155,7 @@ class RoomManager {
             .child("isReady").setValue(ready)
     }
 
-    fun startParty(roomCode: String, autoPlay: Boolean = true) {
+    fun startParty(roomCode: String, autoPlay: Boolean = true, onSuccess: (() -> Unit)? = null, onFailure: ((String) -> Unit)? = null) {
         // Single atomic write to prevent multiple onDataChange callbacks and reduce startup lag
         val playbackState = PlaybackState(
             isPlaying = autoPlay,
@@ -160,6 +171,8 @@ class RoomManager {
             "playbackState" to playbackState.toMap()
         )
         roomsRef.child(roomCode).updateChildren(updates)
+            .addOnSuccessListener { onSuccess?.invoke() }
+            .addOnFailureListener { e -> onFailure?.invoke(e.message ?: "Failed to start party") }
     }
 
     fun setMemberAutoPlay(roomCode: String, autoPlay: Boolean) {
@@ -199,13 +212,18 @@ class RoomManager {
 
     fun sendReaction(roomCode: String, emoji: String) {
         val user = currentUser ?: return
+        val reactionKey = roomsRef.child(roomCode).child("reactions").push().key ?: return
         val reaction = mapOf(
             "emoji" to emoji,
             "senderId" to user.uid,
             "senderName" to (user.displayName ?: ""),
             "timestamp" to ServerValue.TIMESTAMP
         )
-        roomsRef.child(roomCode).child("reactions").push().setValue(reaction)
+        val updates = mapOf(
+            "reactions/$reactionKey" to reaction,
+            "lastReactionWrite/${user.uid}" to ServerValue.TIMESTAMP
+        )
+        roomsRef.child(roomCode).updateChildren(updates)
     }
 
     fun observeRoom(roomCode: String): Flow<Map<String, Any?>> = callbackFlow {
@@ -316,8 +334,8 @@ class RoomManager {
 
     private fun cleanupRejoinEntriesForRoom(roomCode: String) {
         // Scan all users and remove rejoin entries for this room
-        // We also need to check the members who left before
-        roomsRef.child(roomCode).child("members").get().addOnSuccessListener { snapshot ->
+        // Use memberHistory — contains ALL users who ever joined, not just current
+        roomsRef.child(roomCode).child("memberHistory").get().addOnSuccessListener { snapshot ->
             snapshot.children.forEach { child ->
                 val uid = child.key ?: return@forEach
                 usersRef.child(uid).child("recentRooms").child(roomCode).removeValue()
@@ -332,6 +350,7 @@ class RoomManager {
     // Chat methods
     fun sendChatMessage(roomCode: String, message: String, replyTo: ChatMessage? = null) {
         val user = currentUser ?: return
+        val msgKey = roomsRef.child(roomCode).child("chat").push().key ?: return
         val chatMsg = buildMap<String, Any> {
             put("senderId", user.uid)
             put("senderName", user.displayName ?: "")
@@ -344,7 +363,11 @@ class RoomManager {
                 put("replyToMessage", if (replyTo.type == "voice") "\uD83C\uDFA4 Voice message" else replyTo.message)
             }
         }
-        roomsRef.child(roomCode).child("chat").push().setValue(chatMsg)
+        val updates = mapOf(
+            "chat/$msgKey" to chatMsg,
+            "lastChatWrite/${user.uid}" to ServerValue.TIMESTAMP
+        )
+        roomsRef.child(roomCode).updateChildren(updates)
     }
 
     fun sendSystemMessage(roomCode: String, message: String, type: String) {
@@ -358,7 +381,14 @@ class RoomManager {
         roomsRef.child(roomCode).child("chat").push().setValue(chatMsg)
     }
 
-    fun observeChat(roomCode: String): Flow<ChatMessage> = callbackFlow {
+    fun observeChat(roomCode: String, sinceTimestamp: Long = 0L): Flow<ChatMessage> = callbackFlow {
+        val query = if (sinceTimestamp > 0L) {
+            roomsRef.child(roomCode).child("chat")
+                .orderByChild("timestamp")
+                .startAfter(sinceTimestamp.toDouble())
+        } else {
+            roomsRef.child(roomCode).child("chat")
+        }
         val listener = object : com.google.firebase.database.ChildEventListener {
             override fun onChildAdded(snapshot: DataSnapshot, previousChildName: String?) {
                 @Suppress("UNCHECKED_CAST")
@@ -373,8 +403,8 @@ class RoomManager {
                 close(error.toException())
             }
         }
-        roomsRef.child(roomCode).child("chat").addChildEventListener(listener)
-        awaitClose { roomsRef.child(roomCode).child("chat").removeEventListener(listener) }
+        query.addChildEventListener(listener)
+        awaitClose { query.removeEventListener(listener) }
     }
 
     // Rejoin methods
@@ -479,8 +509,12 @@ class RoomManager {
                 "hasMatchingFile" to true
             )
 
-            roomsRef.child(roomCode).child("members").child(user.uid)
-                .setValue(memberData)
+            val updates = mapOf(
+                "members/${user.uid}" to memberData,
+                "memberHistory/${user.uid}" to true
+            )
+
+            roomsRef.child(roomCode).updateChildren(updates)
                 .addOnSuccessListener {
                     // Remove rejoin entry
                     removeRejoinEntry(roomCode)
@@ -522,137 +556,110 @@ class RoomManager {
                 put("replyToMessage", if (replyTo.type == "voice") "\uD83C\uDFA4 Voice message" else replyTo.message)
             }
         }
-        roomsRef.child(roomCode).child("chat").push().setValue(voiceMsg)
+        val msgKey = roomsRef.child(roomCode).child("chat").push().key ?: return
+        val updates = mapOf(
+            "chat/$msgKey" to voiceMsg,
+            "lastChatWrite/${user.uid}" to ServerValue.TIMESTAMP
+        )
+        roomsRef.child(roomCode).updateChildren(updates)
     }
 
-    fun getCloudinarySignature(
-        onSuccess: (signature: String, timestamp: Long, apiKey: String, cloudName: String, folder: String) -> Unit,
-        onFailure: (String) -> Unit
-    ) {
-        val user = currentUser ?: run { onFailure("Not logged in"); return }
-        user.getIdToken(false).addOnSuccessListener { tokenResult ->
-            val idToken = tokenResult.token ?: run { onFailure("No ID token"); return@addOnSuccessListener }
+    suspend fun getCloudinarySignature(): CloudinarySignatureResult = withContext(Dispatchers.IO) {
+        val user = currentUser ?: throw Exception("Not logged in")
+        val tokenResult = user.getIdToken(false).await()
+        val idToken = tokenResult.token ?: throw Exception("No ID token")
 
-            val thread = Thread {
-                try {
-                    val url = java.net.URL(WORKER_URL)
-                    val conn = url.openConnection() as java.net.HttpURLConnection
-                    conn.requestMethod = "POST"
-                    conn.setRequestProperty("Authorization", "Bearer $idToken")
-                    conn.setRequestProperty("Content-Type", "application/json")
-                    conn.connectTimeout = 10_000
-                    conn.readTimeout = 10_000
+        val url = java.net.URL(WORKER_URL)
+        val conn = url.openConnection() as java.net.HttpURLConnection
+        try {
+            conn.requestMethod = "POST"
+            conn.setRequestProperty("Authorization", "Bearer $idToken")
+            conn.setRequestProperty("Content-Type", "application/json")
+            conn.connectTimeout = 10_000
+            conn.readTimeout = 10_000
 
-                    val responseCode = conn.responseCode
-                    val body = if (responseCode in 200..299) {
-                        conn.inputStream.bufferedReader().readText()
-                    } else {
-                        conn.errorStream?.bufferedReader()?.readText() ?: "Unknown error"
-                    }
-                    conn.disconnect()
-
-                    if (responseCode != 200) {
-                        android.os.Handler(android.os.Looper.getMainLooper()).post {
-                            onFailure("Server error: $body")
-                        }
-                        return@Thread
-                    }
-
-                    val json = org.json.JSONObject(body)
-                    val signature = json.getString("signature")
-                    val timestamp = json.getLong("timestamp")
-                    val apiKey = json.getString("apiKey")
-                    val cloudName = json.getString("cloudName")
-                    val folder = json.getString("folder")
-
-                    android.os.Handler(android.os.Looper.getMainLooper()).post {
-                        onSuccess(signature, timestamp, apiKey, cloudName, folder)
-                    }
-                } catch (e: Exception) {
-                    android.os.Handler(android.os.Looper.getMainLooper()).post {
-                        onFailure(e.message ?: "Signature request failed")
-                    }
-                }
+            val responseCode = conn.responseCode
+            val body = if (responseCode in 200..299) {
+                conn.inputStream.bufferedReader().readText()
+            } else {
+                conn.errorStream?.bufferedReader()?.readText() ?: "Unknown error"
             }
-            thread.start()
-        }.addOnFailureListener {
-            onFailure(it.message ?: "Failed to get ID token")
+
+            if (responseCode != 200) {
+                throw Exception("Server error: $body")
+            }
+
+            val json = org.json.JSONObject(body)
+            CloudinarySignatureResult(
+                signature = json.getString("signature"),
+                timestamp = json.getLong("timestamp"),
+                apiKey = json.getString("apiKey"),
+                cloudName = json.getString("cloudName"),
+                folder = json.getString("folder")
+            )
+        } finally {
+            conn.disconnect()
         }
     }
 
-    fun uploadVoiceToCloudinary(
+    suspend fun uploadVoiceToCloudinary(
         file: java.io.File,
         signature: String,
         timestamp: Long,
         apiKey: String,
         cloudName: String,
-        folder: String,
-        onSuccess: (audioUrl: String) -> Unit,
-        onFailure: (String) -> Unit
-    ) {
-        val thread = Thread {
-            try {
-                val boundary = "----KanDaloo${System.currentTimeMillis()}"
-                val url = java.net.URL("https://api.cloudinary.com/v1_1/$cloudName/video/upload")
-                val conn = url.openConnection() as java.net.HttpURLConnection
-                conn.requestMethod = "POST"
-                conn.doOutput = true
-                conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
-                conn.connectTimeout = 30_000
-                conn.readTimeout = 60_000
+        folder: String
+    ): String = withContext(Dispatchers.IO) {
+        val boundary = "----KanDaloo${System.currentTimeMillis()}"
+        val url = java.net.URL("https://api.cloudinary.com/v1_1/$cloudName/video/upload")
+        val conn = url.openConnection() as java.net.HttpURLConnection
+        try {
+            conn.requestMethod = "POST"
+            conn.doOutput = true
+            conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+            conn.connectTimeout = 30_000
+            conn.readTimeout = 60_000
 
-                val output = conn.outputStream
+            val output = conn.outputStream
 
-                fun writeField(name: String, value: String) {
-                    output.write("--$boundary\r\n".toByteArray())
-                    output.write("Content-Disposition: form-data; name=\"$name\"\r\n\r\n".toByteArray())
-                    output.write("$value\r\n".toByteArray())
-                }
-
-                writeField("api_key", apiKey)
-                writeField("timestamp", timestamp.toString())
-                writeField("signature", signature)
-                writeField("folder", folder)
-
-                // File part
+            fun writeField(name: String, value: String) {
                 output.write("--$boundary\r\n".toByteArray())
-                output.write("Content-Disposition: form-data; name=\"file\"; filename=\"${file.name}\"\r\n".toByteArray())
-                output.write("Content-Type: audio/ogg\r\n\r\n".toByteArray())
-                file.inputStream().use { it.copyTo(output) }
-                output.write("\r\n".toByteArray())
-
-                output.write("--$boundary--\r\n".toByteArray())
-                output.flush()
-                output.close()
-
-                val responseCode = conn.responseCode
-                val body = if (responseCode in 200..299) {
-                    conn.inputStream.bufferedReader().readText()
-                } else {
-                    conn.errorStream?.bufferedReader()?.readText() ?: "Upload failed"
-                }
-                conn.disconnect()
-
-                if (responseCode != 200) {
-                    android.os.Handler(android.os.Looper.getMainLooper()).post {
-                        onFailure("Upload error: $body")
-                    }
-                    return@Thread
-                }
-
-                val json = org.json.JSONObject(body)
-                val secureUrl = json.getString("secure_url")
-
-                android.os.Handler(android.os.Looper.getMainLooper()).post {
-                    onSuccess(secureUrl)
-                }
-            } catch (e: Exception) {
-                android.os.Handler(android.os.Looper.getMainLooper()).post {
-                    onFailure(e.message ?: "Upload failed")
-                }
+                output.write("Content-Disposition: form-data; name=\"$name\"\r\n\r\n".toByteArray())
+                output.write("$value\r\n".toByteArray())
             }
+
+            writeField("api_key", apiKey)
+            writeField("timestamp", timestamp.toString())
+            writeField("signature", signature)
+            writeField("folder", folder)
+
+            // File part
+            output.write("--$boundary\r\n".toByteArray())
+            output.write("Content-Disposition: form-data; name=\"file\"; filename=\"${file.name}\"\r\n".toByteArray())
+            output.write("Content-Type: audio/ogg\r\n\r\n".toByteArray())
+            file.inputStream().use { it.copyTo(output) }
+            output.write("\r\n".toByteArray())
+
+            output.write("--$boundary--\r\n".toByteArray())
+            output.flush()
+            output.close()
+
+            val responseCode = conn.responseCode
+            val body = if (responseCode in 200..299) {
+                conn.inputStream.bufferedReader().readText()
+            } else {
+                conn.errorStream?.bufferedReader()?.readText() ?: "Upload failed"
+            }
+
+            if (responseCode != 200) {
+                throw Exception("Upload error: $body")
+            }
+
+            val json = org.json.JSONObject(body)
+            json.getString("secure_url")
+        } finally {
+            conn.disconnect()
         }
-        thread.start()
     }
 
     // ─── Heartbeat / Presence System ───
@@ -709,6 +716,7 @@ class RoomManager {
     }
 
     fun observePresence(roomCode: String, onMemberOffline: (String, String) -> Unit, onAllOffline: () -> Unit): Flow<Map<String, Long>> = callbackFlow {
+        val notifiedOffline = mutableSetOf<String>()
         val listener = object : ValueEventListener {
             override fun onDataChange(snapshot: DataSnapshot) {
                 val now = System.currentTimeMillis()
@@ -725,10 +733,15 @@ class RoomManager {
                     presenceMap[uid] = lastSeen
                     memberCount++
 
-                    if (lastSeen > 0 && (now - lastSeen) < OFFLINE_THRESHOLD_MS) {
+                    val isOnline = lastSeen > 0 && (now - lastSeen) < OFFLINE_THRESHOLD_MS
+                    if (isOnline) {
                         allOffline = false
-                    } else if (uid != currentUid && lastSeen > 0 && (now - lastSeen) >= OFFLINE_THRESHOLD_MS) {
-                        onMemberOffline(uid, displayName)
+                        notifiedOffline.remove(uid) // Reset if online
+                    } else if (uid != currentUid && lastSeen > 0) {
+                        // User is offline
+                        if (notifiedOffline.add(uid)) { // Returns true if it was added (not already present)
+                            onMemberOffline(uid, displayName)
+                        }
                     }
                 }
 
@@ -763,6 +776,48 @@ class RoomManager {
                 ))
                 sendSystemMessage(roomCode, "Paused for sync — $displayName rejoined", "system")
             }
+        }
+    }
+
+    fun setTyping(roomCode: String, isTyping: Boolean) {
+        val uid = currentUser?.uid ?: return
+        if (isTyping) {
+            roomsRef.child(roomCode).child("typing").child(uid).setValue(
+                mapOf("name" to (currentUser?.displayName ?: "Someone"), "at" to ServerValue.TIMESTAMP)
+            )
+        } else {
+            roomsRef.child(roomCode).child("typing").child(uid).removeValue()
+        }
+    }
+
+    fun observeTyping(roomCode: String): Flow<List<String>> = callbackFlow {
+        val listener = object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                val currentUid = currentUser?.uid ?: ""
+                val now = System.currentTimeMillis()
+                val typingNames = snapshot.children
+                    .filter { it.key != currentUid }
+                    .filter {
+                        val at = (it.child("at").value as? Long)
+                            ?: (it.child("at").value as? Number)?.toLong() ?: 0L
+                        (now - at) < 10_000 // Only show if typing within last 10s
+                    }
+                    .mapNotNull { it.child("name").value as? String }
+                trySend(typingNames)
+            }
+            override fun onCancelled(error: DatabaseError) { close(error.toException()) }
+        }
+        roomsRef.child(roomCode).child("typing").addValueEventListener(listener)
+        awaitClose { roomsRef.child(roomCode).child("typing").removeEventListener(listener) }
+    }
+}
+
+suspend fun <T> Task<T>.await(): T = suspendCancellableCoroutine { continuation ->
+    addOnCompleteListener { task ->
+        if (task.isSuccessful) {
+            continuation.resume(task.result)
+        } else {
+            continuation.resumeWithException(task.exception ?: Exception("Task failed"))
         }
     }
 }

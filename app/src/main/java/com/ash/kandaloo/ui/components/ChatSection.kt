@@ -12,6 +12,12 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -105,6 +111,8 @@ fun ChatSection(
     voicePlayerManager: VoicePlayerManager,
     onSendVoice: ((File, Long, ChatMessage?) -> Unit)? = null,
     onRecordingStateChanged: ((Boolean) -> Unit)? = null,
+    typingNames: List<String> = emptyList(),
+    onUserTypingStateChanged: ((Boolean) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -113,6 +121,17 @@ fun ChatSection(
     val focusManager = LocalFocusManager.current
     var isTextFieldFocused by remember { mutableStateOf(false) }
     var replyingTo by remember { mutableStateOf<ChatMessage?>(null) }
+
+    // Send typing events to Firebase
+    LaunchedEffect(messageText) {
+        if (messageText.isNotBlank()) {
+            onUserTypingStateChanged?.invoke(true)
+            delay(5000)
+            onUserTypingStateChanged?.invoke(false)
+        } else {
+            onUserTypingStateChanged?.invoke(false)
+        }
+    }
 
     // Voice recording state
     var voiceState by remember { mutableStateOf(VoiceInputState.IDLE) }
@@ -203,6 +222,11 @@ fun ChatSection(
                             )
                         }
                     }
+                }
+            }
+            if (typingNames.isNotEmpty()) {
+                item {
+                    TypingBubble(names = typingNames)
                 }
             }
             item { Spacer(modifier = Modifier.height(4.dp)) }
@@ -845,6 +869,81 @@ fun SwipeableMessageWrapper(
                 }
         ) {
             content()
+        }
+    }
+}
+
+@Composable
+private fun TypingBubble(names: List<String>) {
+    var currentIndex by remember { mutableStateOf(0) }
+    
+    // Rotate name every 2 seconds if multiple typers
+    if (names.size > 1) {
+        LaunchedEffect(names) {
+            while (true) {
+                delay(2000)
+                currentIndex = (currentIndex + 1) % names.size
+            }
+        }
+    } else {
+        currentIndex = 0
+    }
+    
+    val displayName = names.getOrNull(currentIndex) ?: ""
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp),
+        horizontalAlignment = Alignment.Start
+    ) {
+        Text(
+            text = "$displayName is typing...",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
+            modifier = Modifier.padding(start = 12.dp, bottom = 2.dp)
+        )
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(topStart = 4.dp, topEnd = 16.dp, bottomStart = 16.dp, bottomEnd = 16.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            val infiniteTransition = rememberInfiniteTransition(label = "typing")
+            val dot1Alpha by infiniteTransition.animateFloat(
+                initialValue = 0.2f,
+                targetValue = 1f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(600, easing = LinearEasing),
+                    repeatMode = RepeatMode.Reverse
+                ),
+                label = "dot1"
+            )
+            val dot2Alpha by infiniteTransition.animateFloat(
+                initialValue = 0.2f,
+                targetValue = 1f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(600, delayMillis = 200, easing = LinearEasing),
+                    repeatMode = RepeatMode.Reverse
+                ),
+                label = "dot2"
+            )
+            val dot3Alpha by infiniteTransition.animateFloat(
+                initialValue = 0.2f,
+                targetValue = 1f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(600, delayMillis = 400, easing = LinearEasing),
+                    repeatMode = RepeatMode.Reverse
+                ),
+                label = "dot3"
+            )
+
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                Box(modifier = Modifier.size(6.dp).clip(CircleShape).background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = dot1Alpha)))
+                Box(modifier = Modifier.size(6.dp).clip(CircleShape).background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = dot2Alpha)))
+                Box(modifier = Modifier.size(6.dp).clip(CircleShape).background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = dot3Alpha)))
+            }
         }
     }
 }
