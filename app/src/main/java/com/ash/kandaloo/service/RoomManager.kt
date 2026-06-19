@@ -284,6 +284,7 @@ class RoomManager {
     }
 
     fun leaveRoom(roomCode: String, videoUriString: String = "") {
+        stopHeartbeat() // Stop the heartbeat immediately to prevent node recreation in RTDB
         val user = currentUser ?: return
         // Cancel onDisconnect since we're leaving explicitly
         cancelOnDisconnect(roomCode)
@@ -717,6 +718,7 @@ class RoomManager {
 
     fun observePresence(roomCode: String, onMemberOffline: (String, String) -> Unit, onAllOffline: () -> Unit): Flow<Map<String, Long>> = callbackFlow {
         val notifiedOffline = mutableSetOf<String>()
+        val previousMembers = mutableMapOf<String, String>() // Local cache: uid -> displayName to preserve names of removed/offline users
         val listener = object : ValueEventListener {
             override fun onDataChange(snapshot: DataSnapshot) {
                 val now = System.currentTimeMillis()
@@ -724,6 +726,7 @@ class RoomManager {
                 val currentUid = currentUser?.uid ?: ""
                 var allOffline = true
                 var memberCount = 0
+                val currentMembers = mutableMapOf<String, String>()
 
                 snapshot.children.forEach { child ->
                     val uid = child.key ?: return@forEach
@@ -731,6 +734,7 @@ class RoomManager {
                         ?: (child.child("lastSeen").value as? Number)?.toLong() ?: 0L
                     val displayName = child.child("displayName").value as? String ?: "Someone"
                     presenceMap[uid] = lastSeen
+                    currentMembers[uid] = displayName
                     memberCount++
 
                     val isOnline = lastSeen > 0 && (now - lastSeen) < OFFLINE_THRESHOLD_MS
@@ -744,6 +748,18 @@ class RoomManager {
                         }
                     }
                 }
+
+                // Detect members who were removed (left or disconnected) and notify using cached names
+                previousMembers.forEach { (uid, displayName) ->
+                    if (uid != currentUid && !currentMembers.containsKey(uid)) {
+                        if (notifiedOffline.add(uid)) {
+                            onMemberOffline(uid, displayName)
+                        }
+                    }
+                }
+
+                previousMembers.clear()
+                previousMembers.putAll(currentMembers)
 
                 if (memberCount > 0 && allOffline) {
                     onAllOffline()

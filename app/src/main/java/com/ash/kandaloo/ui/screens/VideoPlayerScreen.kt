@@ -354,8 +354,7 @@ fun VideoPlayerScreen(
             confirmButton = {
                 TextButton(onClick = {
                     viewModel.showExitDialog.value = false
-                    viewModel.roomManager.leaveRoom(roomCode)
-                    onExit()
+                    onExit() // onExit in MainActivity already calls leaveRoom cleanly
                 }) {
                     Text("Leave", color = MaterialTheme.colorScheme.error)
                 }

@@ -105,6 +105,12 @@ class VideoPlayerViewModel(
                     isPlayLocked.value = false
                 }
                 _remotePlaybackEvent.trySend(remoteState)
+
+                // Auto-reset sync update flag after a delay to allow local player state to update
+                launch {
+                    delay(800)
+                    isSyncUpdate = false
+                }
             }
         }
 
@@ -233,6 +239,10 @@ class VideoPlayerViewModel(
                 lastUpdatedBy = currentUserId,
                 lastUpdatedAt = System.currentTimeMillis()
             ))
+            viewModelScope.launch {
+                delay(800)
+                isSyncUpdate = false
+            }
         }
     }
 
@@ -256,6 +266,10 @@ class VideoPlayerViewModel(
                 lastUpdatedBy = currentUserId,
                 lastUpdatedAt = System.currentTimeMillis()
             ))
+            viewModelScope.launch {
+                delay(800)
+                isSyncUpdate = false
+            }
         }
     }
 

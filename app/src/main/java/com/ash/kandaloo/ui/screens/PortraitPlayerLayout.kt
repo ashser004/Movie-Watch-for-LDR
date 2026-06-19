@@ -167,8 +167,17 @@ fun PortraitPlayerLayout(
                         viewModel.currentSpeed.floatValue = speed
                         exoPlayer.playbackParameters = PlaybackParameters(speed)
                         viewModel.showSpeedMenu.value = false
-                        viewModel.updatePlaybackStateFromLocal(exoPlayer.isPlaying, exoPlayer.currentPosition, speed)
-                        viewModel.isSyncUpdate = false
+                        viewModel.roomManager.updatePlaybackState(viewModel.roomCode, PlaybackState(
+                            isPlaying = exoPlayer.isPlaying,
+                            positionMs = exoPlayer.currentPosition,
+                            speed = speed,
+                            lastUpdatedBy = currentUserId,
+                            lastUpdatedAt = System.currentTimeMillis()
+                        ))
+                        coroutineScope.launch {
+                            delay(800)
+                            viewModel.isSyncUpdate = false
+                        }
                     },
                     onToggleReactions = {
                         viewModel.showReactions.value = !viewModel.showReactions.value
@@ -217,12 +226,21 @@ fun PortraitPlayerLayout(
                 viewModel.seekPosition.longValue = (fraction * viewModel.duration.longValue).toLong()
             },
             onSeekEnd = {
+                viewModel.isSyncUpdate = true
                 exoPlayer.seekTo(viewModel.seekPosition.longValue)
                 exoPlayer.playWhenReady = false
                 viewModel.isUserSeeking.value = false
-                viewModel.isSyncUpdate = true
-                viewModel.updatePlaybackStateFromLocal(false, viewModel.seekPosition.longValue, viewModel.currentSpeed.floatValue)
-                viewModel.isSyncUpdate = false
+                viewModel.roomManager.updatePlaybackState(viewModel.roomCode, PlaybackState(
+                    isPlaying = false,
+                    positionMs = viewModel.seekPosition.longValue,
+                    speed = viewModel.currentSpeed.floatValue,
+                    lastUpdatedBy = currentUserId,
+                    lastUpdatedAt = System.currentTimeMillis()
+                ))
+                coroutineScope.launch {
+                    delay(800)
+                    viewModel.isSyncUpdate = false
+                }
             }
         )
 

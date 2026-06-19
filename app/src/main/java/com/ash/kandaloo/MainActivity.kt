@@ -86,6 +86,8 @@ fun KanDalooApp(
     var isTransitioningToPlayer by remember { mutableStateOf(false) }
     // Dialog state for file not found during rejoin
     var showFileNotFoundDialog by remember { mutableStateOf(false) }
+    var showRejoinLobbyDialog by remember { mutableStateOf(false) }
+    var pendingRejoinRoomCode by remember { mutableStateOf("") }
     // Track if entering player from a rejoin action
     var isRejoining by remember { mutableStateOf(false) }
 
@@ -107,6 +109,33 @@ fun KanDalooApp(
             confirmButton = {
                 TextButton(onClick = { showFileNotFoundDialog = false }) {
                     Text("OK")
+                }
+            }
+        )
+    }
+
+    // Rejoin via lobby fallback dialog (for expired permissions or moved files)
+    if (showRejoinLobbyDialog) {
+        AlertDialog(
+            onDismissRequest = { showRejoinLobbyDialog = false },
+            title = { Text("Video File Not Found") },
+            text = { Text("The video file is no longer accessible at its previous location. Would you like to enter the room lobby and select the file again?") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showRejoinLobbyDialog = false
+                    roomManager.removeRejoinEntry(pendingRejoinRoomCode)
+                    roomManager.joinRoom(
+                        roomCode = pendingRejoinRoomCode,
+                        onSuccess = { navController.navigate("room") },
+                        onFailure = { /* handled */ }
+                    )
+                }) {
+                    Text("Go to Lobby")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRejoinLobbyDialog = false }) {
+                    Text("Cancel")
                 }
             }
         )
@@ -174,9 +203,9 @@ fun KanDalooApp(
                                 }
                             )
                         } else {
-                            // File not accessible or URI invalid — show error
-                            roomManager.removeRejoinEntry(rejoinInfo.roomCode)
-                            showFileNotFoundDialog = true
+                            // File not accessible or URI invalid — offer fallback option to enter room lobby and choose again
+                            pendingRejoinRoomCode = rejoinInfo.roomCode
+                            showRejoinLobbyDialog = true
                         }
                     } else {
                         // No stored video URI — normal rejoin through room screen
