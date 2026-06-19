@@ -69,17 +69,21 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import androidx.compose.runtime.rememberCoroutineScope
 import com.ash.kandaloo.data.RejoinInfo
+import com.ash.kandaloo.data.RoomSessionDao
 import com.ash.kandaloo.service.RoomManager
 import com.ash.kandaloo.ui.theme.GradientEnd
 import com.ash.kandaloo.ui.theme.GradientStart
 import com.google.firebase.auth.FirebaseAuth
 import com.ash.kandaloo.ui.components.UserAvatar
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
     roomManager: RoomManager,
+    roomSessionDao: RoomSessionDao,
     onCreateRoom: (Int) -> Unit,
     onJoinRoom: (String) -> Unit,
     onRejoinRoom: (RejoinInfo) -> Unit,
@@ -90,15 +94,66 @@ fun HomeScreen(
     var showJoinDialog by remember { mutableStateOf(false) }
     var isVisible by remember { mutableStateOf(false) }
     var rejoinRooms by remember { mutableStateOf<List<RejoinInfo>>(emptyList()) }
+    val scope = rememberCoroutineScope()
 
     LaunchedEffect(Unit) {
         isVisible = true
     }
 
     // Refresh rejoin rooms every time the screen becomes visible (on resume)
+    // Uses local database + silent RTDB probes instead of Firebase-only getRecentRooms
     LifecycleResumeEffect(Unit) {
-        roomManager.getRecentRooms { rooms ->
-            rejoinRooms = rooms
+        scope.launch {
+            // Step 1: Clean up sessions older than 24 hours
+            val cutoff = System.currentTimeMillis() - (24 * 60 * 60 * 1000L)
+            roomSessionDao.deleteOlderThan(cutoff)
+
+            // Step 2: Read left sessions from local database
+            val leftSessions = roomSessionDao.getLeftSessions()
+            if (leftSessions.isEmpty()) {
+                rejoinRooms = emptyList()
+                return@launch
+            }
+
+            // Step 3: Probe each room silently in parallel
+            // As rooms are confirmed alive, they appear in the list one by one
+            val confirmedRooms = mutableListOf<RejoinInfo>()
+            val probeJobs = leftSessions.map { session ->
+                launch {
+                    val isAlive = roomManager.probeRoom(
+                        roomCode = session.roomCode,
+                        attempts = 4,
+                        delayMs = 2500L
+                    )
+                    if (isAlive) {
+                        val rejoinInfo = RejoinInfo(
+                            roomCode = session.roomCode,
+                            hostName = session.hostName,
+                            leftAt = session.leftAt,
+                            isHost = session.isHost,
+                            videoUriString = session.videoUriString
+                        )
+                        synchronized(confirmedRooms) {
+                            confirmedRooms.add(rejoinInfo)
+                            confirmedRooms.sortByDescending { it.leftAt }
+                            rejoinRooms = confirmedRooms.toList()
+                        }
+                    } else {
+                        // Room is dead — clean up silently
+                        roomSessionDao.delete(session.roomCode)
+                        // Also mark it as ended in RTDB if it has 0 members
+                        roomManager.markRoomEndedIfEmpty(session.roomCode)
+                        // Remove from Firebase rejoin entries too
+                        roomManager.removeRejoinEntry(session.roomCode)
+                    }
+                }
+            }
+            // Wait for all probes to finish
+            probeJobs.forEach { it.join() }
+            // Final update with all confirmed rooms
+            synchronized(confirmedRooms) {
+                rejoinRooms = confirmedRooms.toList()
+            }
         }
         onPauseOrDispose { }
     }

@@ -465,6 +465,57 @@ class RoomManager {
         }
     }
 
+    /**
+     * Suspend version of checkRoomStillActive that also checks heartbeat timestamps.
+     * Returns true only if the room exists, status is not "ended", AND at least one
+     * member has a lastSeen timestamp within OFFLINE_THRESHOLD_MS.
+     */
+    suspend fun checkRoomAlive(roomCode: String): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val snapshot = roomsRef.child(roomCode).get().await()
+            if (!snapshot.exists()) return@withContext false
+            val status = snapshot.child("status").value as? String ?: "ended"
+            if (status == "ended") return@withContext false
+            val membersSnap = snapshot.child("members")
+            if (membersSnap.childrenCount == 0L) return@withContext false
+            val now = System.currentTimeMillis()
+            val hasActiveHeartbeat = membersSnap.children.any { child ->
+                val lastSeen = (child.child("lastSeen").value as? Long)
+                    ?: (child.child("lastSeen").value as? Number)?.toLong() ?: 0L
+                lastSeen > 0 && (now - lastSeen) < OFFLINE_THRESHOLD_MS
+            }
+            hasActiveHeartbeat
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /**
+     * Probes a room up to [attempts] times with a delay between each attempt.
+     * Returns true as soon as the room is found alive. Returns false only after
+     * all attempts fail — at which point the room is considered dead.
+     */
+    suspend fun probeRoom(roomCode: String, attempts: Int = 4, delayMs: Long = 2500L): Boolean {
+        repeat(attempts) { attempt ->
+            if (checkRoomAlive(roomCode)) return true
+            if (attempt < attempts - 1) delay(delayMs)
+        }
+        return false
+    }
+
+    /**
+     * If the room has 0 members, mark it as "ended" so no one else tries to rejoin.
+     * This is called when probes detect an abandoned room.
+     */
+    fun markRoomEndedIfEmpty(roomCode: String) {
+        roomsRef.child(roomCode).child("members").get().addOnSuccessListener { snapshot ->
+            if (snapshot.childrenCount == 0L) {
+                roomsRef.child(roomCode).child("status").setValue("ended")
+                cleanupRejoinEntriesForRoom(roomCode)
+            }
+        }
+    }
+
     fun removeRejoinEntry(roomCode: String) {
         val user = currentUser ?: return
         usersRef.child(user.uid).child("recentRooms").child(roomCode).removeValue()
@@ -716,8 +767,14 @@ class RoomManager {
             .onDisconnect().cancel()
     }
 
-    fun observePresence(roomCode: String, onMemberOffline: (String, String) -> Unit, onAllOffline: () -> Unit): Flow<Map<String, Long>> = callbackFlow {
+    fun observePresence(
+        roomCode: String,
+        onMemberOffline: (String, String) -> Unit,
+        onMemberLeft: (String, String) -> Unit,
+        onAllOffline: () -> Unit
+    ): Flow<Map<String, Long>> = callbackFlow {
         val notifiedOffline = mutableSetOf<String>()
+        val notifiedLeft = mutableSetOf<String>()
         val previousMembers = mutableMapOf<String, String>() // Local cache: uid -> displayName to preserve names of removed/offline users
         val listener = object : ValueEventListener {
             override fun onDataChange(snapshot: DataSnapshot) {
@@ -741,20 +798,24 @@ class RoomManager {
                     if (isOnline) {
                         allOffline = false
                         notifiedOffline.remove(uid) // Reset if online
+                        notifiedLeft.remove(uid)
                     } else if (uid != currentUid && lastSeen > 0) {
-                        // User is offline
-                        if (notifiedOffline.add(uid)) { // Returns true if it was added (not already present)
+                        // User is still in the database but heartbeat is stale — they went offline
+                        if (notifiedOffline.add(uid)) {
                             onMemberOffline(uid, displayName)
                         }
                     }
                 }
 
-                // Detect members who were removed (left or disconnected) and notify using cached names
+                // Detect members whose nodes were REMOVED from the database.
+                // This means they explicitly left (leaveRoom removes the node).
+                // Don't fire onMemberOffline — the "left the room" chat message handles this.
                 previousMembers.forEach { (uid, displayName) ->
                     if (uid != currentUid && !currentMembers.containsKey(uid)) {
-                        if (notifiedOffline.add(uid)) {
-                            onMemberOffline(uid, displayName)
+                        if (notifiedLeft.add(uid)) {
+                            onMemberLeft(uid, displayName)
                         }
+                        notifiedOffline.remove(uid)
                     }
                 }
 

@@ -157,6 +157,8 @@ class VideoPlayerViewModel(
             roomManager.observePresence(
                 roomCode = roomCode,
                 onMemberOffline = { uid, displayName ->
+                    // Fires ONLY when the member's heartbeat is stale
+                    // (they are still in the database but not responding)
                     val sysMsg = ChatMessage(
                         id = "presence_off_$uid",
                         senderId = "system",
@@ -173,6 +175,11 @@ class VideoPlayerViewModel(
                             floatingMessages.remove(sysMsg)
                         }
                     }
+                },
+                onMemberLeft = { _, _ ->
+                    // No-op — the "left the room" chat message is already
+                    // written to Firebase by the leaving user's device
+                    // and will be received via the observeChat listener.
                 },
                 onAllOffline = {
                     roomManager.endRoom(roomCode)

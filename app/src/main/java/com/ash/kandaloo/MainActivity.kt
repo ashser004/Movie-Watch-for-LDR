@@ -17,12 +17,15 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.ash.kandaloo.data.PreferencesManager
+import com.ash.kandaloo.data.RoomSessionDao
+import com.ash.kandaloo.data.RoomSessionEntity
 import com.ash.kandaloo.service.RoomManager
 import com.ash.kandaloo.ui.screens.HomeScreen
 import com.ash.kandaloo.ui.screens.LoginScreen
@@ -31,6 +34,7 @@ import com.ash.kandaloo.ui.screens.SettingsScreen
 import com.ash.kandaloo.ui.screens.VideoPlayerScreen
 import com.ash.kandaloo.ui.theme.KanDalooTheme
 import com.google.firebase.auth.FirebaseAuth
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -42,6 +46,7 @@ class MainActivity : ComponentActivity() {
         val app = application as KanDalooApplication
         val preferencesManager = app.container.preferencesManager
         val roomManager = app.container.roomManager
+        val roomSessionDao = app.container.roomSessionDao
 
         setContent {
             val isDarkTheme by preferencesManager.isDarkTheme.collectAsState(initial = true)
@@ -49,7 +54,8 @@ class MainActivity : ComponentActivity() {
             KanDalooTheme(darkTheme = isDarkTheme) {
                 KanDalooApp(
                     preferencesManager = preferencesManager,
-                    roomManager = roomManager
+                    roomManager = roomManager,
+                    roomSessionDao = roomSessionDao
                 )
             }
         }
@@ -72,10 +78,12 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun KanDalooApp(
     preferencesManager: PreferencesManager,
-    roomManager: RoomManager
+    roomManager: RoomManager,
+    roomSessionDao: RoomSessionDao
 ) {
     val navController = rememberNavController()
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val isLoggedIn = FirebaseAuth.getInstance().currentUser != null
 
     // Shared state for room navigation
@@ -157,6 +165,7 @@ fun KanDalooApp(
         composable("home") {
             HomeScreen(
                 roomManager = roomManager,
+                roomSessionDao = roomSessionDao,
                 onCreateRoom = { maxMembers ->
                     val roomCode = roomManager.generateRoomCode()
                     currentRoomCode = roomCode
@@ -165,6 +174,20 @@ fun KanDalooApp(
                         roomCode = roomCode,
                         maxMembers = maxMembers,
                         onSuccess = {
+                            // Save to local database
+                            val user = FirebaseAuth.getInstance().currentUser
+                            scope.launch {
+                                roomSessionDao.upsert(
+                                    RoomSessionEntity(
+                                        roomCode = roomCode,
+                                        hostName = user?.displayName ?: "Host",
+                                        hostId = user?.uid ?: "",
+                                        isHost = true,
+                                        joinedAt = System.currentTimeMillis(),
+                                        maxMembers = maxMembers
+                                    )
+                                )
+                            }
                             navController.navigate("room")
                         },
                         onFailure = { /* handled inside */ }
@@ -173,6 +196,21 @@ fun KanDalooApp(
                 onJoinRoom = { roomCode ->
                     currentRoomCode = roomCode
                     isCurrentUserHost = false
+                    // Save to local database
+                    scope.launch {
+                        // We'll get the host info from the room once we're in it,
+                        // for now save with what we know
+                        val user = FirebaseAuth.getInstance().currentUser
+                        roomSessionDao.upsert(
+                            RoomSessionEntity(
+                                roomCode = roomCode,
+                                hostName = "",  // Will be updated when room data loads
+                                hostId = "",
+                                isHost = false,
+                                joinedAt = System.currentTimeMillis()
+                            )
+                        )
+                    }
                     navController.navigate("room")
                 },
                 onRejoinRoom = { rejoinInfo ->
@@ -188,6 +226,12 @@ fun KanDalooApp(
                                 roomCode = rejoinInfo.roomCode,
                                 onSuccess = { status ->
                                     selectedVideoUri = videoUri
+                                    // Update local DB: clear leftAt since we're back in
+                                    scope.launch {
+                                        roomSessionDao.getSession(rejoinInfo.roomCode)?.let { session ->
+                                            roomSessionDao.upsert(session.copy(leftAt = 0L))
+                                        }
+                                    }
                                     if (status == "playing") {
                                         isRejoining = true
                                         navController.navigate("player") {
@@ -199,6 +243,8 @@ fun KanDalooApp(
                                 },
                                 onFailure = {
                                     roomManager.removeRejoinEntry(rejoinInfo.roomCode)
+                                    // Clean up local DB too
+                                    scope.launch { roomSessionDao.delete(rejoinInfo.roomCode) }
                                     showFileNotFoundDialog = true
                                 }
                             )
@@ -212,7 +258,15 @@ fun KanDalooApp(
                         roomManager.removeRejoinEntry(rejoinInfo.roomCode)
                         roomManager.joinRoom(
                             roomCode = rejoinInfo.roomCode,
-                            onSuccess = { navController.navigate("room") },
+                            onSuccess = {
+                                // Update local DB: clear leftAt since we're back in
+                                scope.launch {
+                                    roomSessionDao.getSession(rejoinInfo.roomCode)?.let { session ->
+                                        roomSessionDao.upsert(session.copy(leftAt = 0L))
+                                    }
+                                }
+                                navController.navigate("room")
+                            },
                             onFailure = { /* handled */ }
                         )
                     }
@@ -237,6 +291,12 @@ fun KanDalooApp(
                     selectedVideoUri = uri
                     isTransitioningToPlayer = true
                     isRejoining = false
+                    // Update local DB with video URI
+                    scope.launch {
+                        roomSessionDao.getSession(currentRoomCode)?.let { session ->
+                            roomSessionDao.upsert(session.copy(videoUriString = uri.toString()))
+                        }
+                    }
                     navController.navigate("player") {
                         popUpTo("room") { inclusive = true }
                     }
@@ -256,6 +316,17 @@ fun KanDalooApp(
                     isRejoin = isRejoining,
                     onExit = {
                         roomManager.leaveRoom(currentRoomCode, uri.toString())
+                        // Update local DB: mark as left with current timestamp and video URI
+                        scope.launch {
+                            roomSessionDao.getSession(currentRoomCode)?.let { session ->
+                                roomSessionDao.upsert(
+                                    session.copy(
+                                        leftAt = System.currentTimeMillis(),
+                                        videoUriString = uri.toString()
+                                    )
+                                )
+                            }
+                        }
                         isRejoining = false
                         navController.navigate("home") {
                             popUpTo("home") { inclusive = true }
