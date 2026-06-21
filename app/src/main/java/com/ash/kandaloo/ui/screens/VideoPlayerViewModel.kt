@@ -24,11 +24,13 @@ class VideoPlayerViewModel(
     val roomCode: String,
     val isHost: Boolean,
     val isRejoin: Boolean,
-    val videoUriString: String
+    val videoUriString: String,
+    val videoFileName: String
 ) : ViewModel() {
 
     private val currentUserId = FirebaseAuth.getInstance().currentUser?.uid ?: ""
     private val currentUserDisplayName = FirebaseAuth.getInstance().currentUser?.displayName ?: "Someone"
+    private val explicitlyLeftUsers = mutableSetOf<String>()
 
     // === Composable States ===
     val showControls = mutableStateOf(true)
@@ -68,7 +70,7 @@ class VideoPlayerViewModel(
     init {
         // Heartbeats & disconnect tracking
         roomManager.startHeartbeat(roomCode)
-        roomManager.setupOnDisconnect(roomCode, videoUriString)
+        roomManager.setupOnDisconnect(roomCode, videoUriString, videoFileName)
 
         // Observe room members (for LiveBadge)
         viewModelScope.launch {
@@ -81,8 +83,9 @@ class VideoPlayerViewModel(
                     val uid = map["uid"] as? String ?: ""
                     val displayName = map["displayName"] as? String ?: "Someone"
                     val lastSeen = (map["lastSeen"] as? Long) ?: (map["lastSeen"] as? Number)?.toLong() ?: 0L
+                    val state = map["state"] as? String ?: "active"
                     
-                    val isActive = uid == currentUserId || (lastSeen > 0 && (now - lastSeen) < RoomManager.OFFLINE_THRESHOLD_MS)
+                    val isActive = uid == currentUserId || (state == "active" && lastSeen > 0 && (now - lastSeen) < RoomManager.OFFLINE_THRESHOLD_MS)
                     if (isActive) displayName else null
                 }
                 memberCount.value = activeMembers.size
@@ -139,6 +142,9 @@ class VideoPlayerViewModel(
             // Rejoining users only see new messages. First-time users see all messages.
             val sinceTimestamp = if (isRejoin) System.currentTimeMillis() else 0L
             roomManager.observeChat(roomCode, sinceTimestamp).collect { msg ->
+                if (msg.type == "leave") {
+                    explicitlyLeftUsers.add(msg.senderId)
+                }
                 chatMessages.add(msg)
 
                 // If in fullscreen, also show as floating message overlay
@@ -176,10 +182,25 @@ class VideoPlayerViewModel(
                         }
                     }
                 },
-                onMemberLeft = { _, _ ->
-                    // No-op — the "left the room" chat message is already
-                    // written to Firebase by the leaving user's device
-                    // and will be received via the observeChat listener.
+                onMemberLeft = { uid, displayName ->
+                    if (uid !in explicitlyLeftUsers) {
+                        val sysMsg = ChatMessage(
+                            id = "presence_left_$uid",
+                            senderId = "system",
+                            senderName = "System",
+                            message = "$displayName Left the room",
+                            timestamp = System.currentTimeMillis(),
+                            type = "system"
+                        )
+                        chatMessages.add(sysMsg)
+                        if (isFullscreen.value) {
+                            floatingMessages.add(sysMsg)
+                            viewModelScope.launch {
+                                delay(4000)
+                                floatingMessages.remove(sysMsg)
+                            }
+                        }
+                    }
                 },
                 onAllOffline = {
                     roomManager.endRoom(roomCode)
@@ -344,10 +365,11 @@ class VideoPlayerViewModelFactory(
     private val roomCode: String,
     private val isHost: Boolean,
     private val isRejoin: Boolean,
-    private val videoUriString: String
+    private val videoUriString: String,
+    private val videoFileName: String
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
-        return VideoPlayerViewModel(roomManager, roomCode, isHost, isRejoin, videoUriString) as T
+        return VideoPlayerViewModel(roomManager, roomCode, isHost, isRejoin, videoUriString, videoFileName) as T
     }
 }

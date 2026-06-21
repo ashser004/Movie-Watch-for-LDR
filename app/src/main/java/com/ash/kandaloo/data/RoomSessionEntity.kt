@@ -15,6 +15,7 @@ data class RoomSessionEntity(
     val hostId: String,
     val isHost: Boolean,
     val videoUriString: String = "",
+    val videoFileName: String = "",
     val joinedAt: Long,          // Timestamp when user first joined
     val leftAt: Long = 0L,      // Timestamp when user left (0 = still active / in room)
     val maxMembers: Int = 2

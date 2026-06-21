@@ -75,7 +75,6 @@ fun SettingsScreen(
     val scope = rememberCoroutineScope()
     val user = FirebaseAuth.getInstance().currentUser
     val isDarkTheme by preferencesManager.isDarkTheme.collectAsState(initial = true)
-    val isAutoPlay by preferencesManager.isAutoPlay.collectAsState(initial = false)
     var showLogoutDialog by remember { mutableStateOf(false) }
 
     // ─── Update checker state ───
@@ -186,18 +185,7 @@ fun SettingsScreen(
                 }
             )
 
-            Spacer(modifier = Modifier.height(8.dp))
 
-            // Auto-Play Toggle
-            SettingToggleItem(
-                icon = Icons.Default.PlayCircleOutline,
-                title = "Auto-Play",
-                subtitle = "Start video automatically when party begins",
-                checked = isAutoPlay,
-                onCheckedChange = {
-                    scope.launch { preferencesManager.setAutoPlay(it) }
-                }
-            )
 
             Spacer(modifier = Modifier.height(8.dp))
 

@@ -9,7 +9,7 @@ import androidx.room.RoomDatabase
  * Database file lives at /data/data/com.ash.kandaloo/databases/kandaloo_db
  * — NOT affected by "Clear Cache", only "Clear Data" or uninstall.
  */
-@Database(entities = [RoomSessionEntity::class], version = 1, exportSchema = false)
+@Database(entities = [RoomSessionEntity::class], version = 2, exportSchema = false)
 abstract class KanDalooDatabase : RoomDatabase() {
     abstract fun roomSessionDao(): RoomSessionDao
 }

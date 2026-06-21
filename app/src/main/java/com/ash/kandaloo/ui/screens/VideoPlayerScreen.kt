@@ -8,6 +8,9 @@ import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.annotation.OptIn
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -59,8 +62,23 @@ fun VideoPlayerScreen(
     val activity = context as? Activity
     val scope = rememberCoroutineScope()
 
+    val videoFileName = remember(videoUri) {
+        try {
+            context.contentResolver.query(videoUri, null, null, null, null)?.use { cursor ->
+                val nameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                if (cursor.moveToFirst() && nameIndex >= 0) {
+                    cursor.getString(nameIndex)
+                } else {
+                    videoUri.lastPathSegment ?: ""
+                }
+            } ?: videoUri.lastPathSegment ?: ""
+        } catch (_: Exception) {
+            videoUri.lastPathSegment ?: ""
+        }
+    }
+
     val viewModel: VideoPlayerViewModel = viewModel(
-        factory = VideoPlayerViewModelFactory(roomManager, roomCode, isHost, isRejoin, videoUri.toString())
+        factory = VideoPlayerViewModelFactory(roomManager, roomCode, isHost, isRejoin, videoUri.toString(), videoFileName)
     )
 
     // Voice player for voice notes (separate from ExoPlayer)
@@ -287,18 +305,31 @@ fun VideoPlayerScreen(
         }
     }
 
-    // Fullscreen landscape locking
+    // Fullscreen landscape locking & transient status bar hiding
     LaunchedEffect(viewModel.isFullscreen.value) {
-        activity?.requestedOrientation = if (viewModel.isFullscreen.value) {
-            ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-        } else {
-            ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        activity?.let { act ->
+            val window = act.window
+            val controller = WindowCompat.getInsetsController(window, window.decorView)
+            
+            if (viewModel.isFullscreen.value) {
+                act.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                controller.hide(WindowInsetsCompat.Type.statusBars())
+                controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            } else {
+                act.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                controller.show(WindowInsetsCompat.Type.statusBars())
+            }
         }
     }
 
     DisposableEffect(Unit) {
         onDispose {
             activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            activity?.let { act ->
+                val window = act.window
+                val controller = WindowCompat.getInsetsController(window, window.decorView)
+                controller.show(WindowInsetsCompat.Type.statusBars())
+            }
         }
     }
 

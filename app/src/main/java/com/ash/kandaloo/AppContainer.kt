@@ -14,7 +14,7 @@ class AppContainer(context: Context) {
         context.applicationContext,
         KanDalooDatabase::class.java,
         "kandaloo_db"
-    ).build()
+    ).fallbackToDestructiveMigration().build()
 
     val roomSessionDao = database.roomSessionDao()
 }

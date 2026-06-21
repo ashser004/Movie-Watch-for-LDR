@@ -108,11 +108,7 @@ fun RoomScreen(
     val roomDataFlow = remember { roomManager.observeRoom(roomCode) }
     val roomData by roomDataFlow.collectAsState(initial = emptyMap())
 
-    // Observe local autoplay preference and sync to Firebase
-    val localAutoPlay by preferencesManager.isAutoPlay.collectAsState(initial = false)
-    LaunchedEffect(localAutoPlay) {
-        roomManager.setMemberAutoPlay(roomCode, localAutoPlay)
-    }
+
 
     // Parse room data
     LaunchedEffect(roomData) {
@@ -429,19 +425,8 @@ fun RoomScreen(
                     Button(
                         onClick = {
                             if (videoUri != null) {
-                                val allAutoPlay = members.values.all { it.autoPlay }
-                                roomManager.startParty(roomCode, allAutoPlay,
+                                roomManager.startParty(roomCode, autoPlay = false,
                                     onSuccess = {
-                                        if (!allAutoPlay) {
-                                            roomManager.sendSystemMessage(
-                                                roomCode,
-                                                "Auto-play is off — not all members have it enabled",
-                                                "system"
-                                            )
-                                            scope.launch {
-                                                snackbarHostState.showSnackbar("Not all members have auto-play enabled")
-                                            }
-                                        }
                                         hasNavigatedToPlayer = true
                                         onStartParty(videoUri!!)
                                     },
@@ -477,6 +462,67 @@ fun RoomScreen(
                             "Waiting for all members to select a matching video...",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
+            }
+
+            // Rejoin Party Button (Non-host members only, when room is playing and file matches)
+            if (!isHost && roomStatus == "playing") {
+                item {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Button(
+                        onClick = {
+                            if (videoUri != null && metadataMatch == true) {
+                                roomManager.rejoinPlayingRoom(
+                                    roomCode = roomCode,
+                                    onSuccess = { status ->
+                                        hasNavigatedToPlayer = true
+                                        onStartParty(videoUri!!)
+                                    },
+                                    onFailure = { err ->
+                                        scope.launch {
+                                            snackbarHostState.showSnackbar("Failed to rejoin party: $err")
+                                        }
+                                    }
+                                )
+                            }
+                        },
+                        enabled = videoUri != null && metadataMatch == true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(56.dp),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary
+                        )
+                    ) {
+                        Icon(Icons.Default.PlayArrow, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            "Rejoin Party 🍿",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    if (videoUri == null) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            "Please choose a video file first to join the party.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    } else if (metadataMatch != true) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            "Please choose a matching video file to join the party.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
                             textAlign = TextAlign.Center,
                             modifier = Modifier.fillMaxWidth()
                         )

@@ -62,7 +62,8 @@ class RoomManager {
                 "displayName" to (user.displayName ?: "Host"),
                 "photoUrl" to (user.photoUrl?.toString() ?: ""),
                 "isReady" to true,
-                "hasMatchingFile" to false
+                "hasMatchingFile" to false,
+                "state" to "active"
             ),
             "memberHistory/${user.uid}" to true
         )
@@ -86,7 +87,10 @@ class RoomManager {
             }
 
             val maxMembers = (snapshot.child("maxMembers").value as? Long)?.toInt() ?: 2
-            val currentMembers = snapshot.child("members").childrenCount.toInt()
+            val currentMembers = snapshot.child("members").children.count {
+                val state = it.child("state").value as? String
+                state != "left"
+            }
 
             if (currentMembers >= maxMembers) {
                 onFailure("Room is full")
@@ -104,7 +108,8 @@ class RoomManager {
                 "displayName" to (user.displayName ?: "Member"),
                 "photoUrl" to (user.photoUrl?.toString() ?: ""),
                 "isReady" to false,
-                "hasMatchingFile" to false
+                "hasMatchingFile" to false,
+                "state" to "active"
             )
 
             val updates = mapOf(
@@ -283,7 +288,7 @@ class RoomManager {
         awaitClose { roomsRef.child(roomCode).child("reactions").removeEventListener(listener) }
     }
 
-    fun leaveRoom(roomCode: String, videoUriString: String = "") {
+    fun leaveRoom(roomCode: String, videoUriString: String = "", videoFileName: String = "") {
         stopHeartbeat() // Stop the heartbeat immediately to prevent node recreation in RTDB
         val user = currentUser ?: return
         // Cancel onDisconnect since we're leaving explicitly
@@ -293,16 +298,19 @@ class RoomManager {
         roomsRef.child(roomCode).get().addOnSuccessListener { snapshot ->
             val hostName = snapshot.child("hostName").value as? String ?: ""
             val hostId = snapshot.child("hostId").value as? String ?: ""
-            val membersCount = snapshot.child("members").childrenCount.toInt()
+            val activeMembersCount = snapshot.child("members").children.count {
+                val state = it.child("state").value as? String
+                state != "left"
+            }
             val status = snapshot.child("status").value as? String ?: "waiting"
             val isHost = user.uid == hostId
 
-            // Now remove ourselves
-            roomsRef.child(roomCode).child("members").child(user.uid).removeValue()
+            // Now mark ourselves as left
+            roomsRef.child(roomCode).child("members").child(user.uid).child("state").setValue("left")
             sendSystemMessage(roomCode, "${user.displayName ?: "Someone"} left the room", "leave")
 
             // Remaining members = count - 1 (since we counted ourselves)
-            val remainingMembers = membersCount - 1
+            val remainingMembers = activeMembersCount - 1
 
             if (remainingMembers <= 0) {
                 // Last person left — mark room as ended and clean up
@@ -321,6 +329,9 @@ class RoomManager {
                 )
                 if (videoUriString.isNotEmpty()) {
                     rejoinData["videoUriString"] = videoUriString
+                }
+                if (videoFileName.isNotEmpty()) {
+                    rejoinData["videoFileName"] = videoFileName
                 }
                 usersRef.child(user.uid).child("recentRooms").child(roomCode).setValue(rejoinData)
             }
@@ -421,7 +432,8 @@ class RoomManager {
                     ?: (child.child("leftAt").value as? Number)?.toLong() ?: 0L
                 val isHost = child.child("isHost").value as? Boolean ?: false
                 val videoUriString = child.child("videoUriString").value as? String ?: ""
-                rooms.add(RejoinInfo(roomCode, hostName, leftAt, isHost, videoUriString))
+                val videoFileName = child.child("videoFileName").value as? String ?: ""
+                rooms.add(RejoinInfo(roomCode, hostName, leftAt, isHost, videoUriString, videoFileName))
                 roomCodes.add(roomCode)
             }
             // Sort by latest left first
@@ -458,8 +470,11 @@ class RoomManager {
     fun checkRoomStillActive(roomCode: String, onResult: (Boolean) -> Unit) {
         roomsRef.child(roomCode).get().addOnSuccessListener { snapshot ->
             val status = snapshot.child("status").value as? String ?: "ended"
-            val membersCount = snapshot.child("members").childrenCount.toInt()
-            onResult(status != "ended" && membersCount > 0)
+            val activeMembersCount = snapshot.child("members").children.count {
+                val state = it.child("state").value as? String
+                state != "left"
+            }
+            onResult(status != "ended" && activeMembersCount > 0)
         }.addOnFailureListener {
             onResult(false)
         }
@@ -480,9 +495,10 @@ class RoomManager {
             if (membersSnap.childrenCount == 0L) return@withContext false
             val now = System.currentTimeMillis()
             val hasActiveHeartbeat = membersSnap.children.any { child ->
+                val state = child.child("state").value as? String
                 val lastSeen = (child.child("lastSeen").value as? Long)
                     ?: (child.child("lastSeen").value as? Number)?.toLong() ?: 0L
-                lastSeen > 0 && (now - lastSeen) < OFFLINE_THRESHOLD_MS
+                state != "left" && lastSeen > 0 && (now - lastSeen) < OFFLINE_THRESHOLD_MS
             }
             hasActiveHeartbeat
         } catch (_: Exception) {
@@ -509,7 +525,11 @@ class RoomManager {
      */
     fun markRoomEndedIfEmpty(roomCode: String) {
         roomsRef.child(roomCode).child("members").get().addOnSuccessListener { snapshot ->
-            if (snapshot.childrenCount == 0L) {
+            val activeCount = snapshot.children.count {
+                val state = it.child("state").value as? String
+                state != "left"
+            }
+            if (activeCount == 0) {
                 roomsRef.child(roomCode).child("status").setValue("ended")
                 cleanupRejoinEntriesForRoom(roomCode)
             }
@@ -546,7 +566,10 @@ class RoomManager {
             }
 
             val maxMembers = (snapshot.child("maxMembers").value as? Long)?.toInt() ?: 2
-            val currentMembers = snapshot.child("members").childrenCount.toInt()
+            val currentMembers = snapshot.child("members").children.count {
+                val state = it.child("state").value as? String
+                state != "left"
+            }
 
             if (currentMembers >= maxMembers) {
                 onFailure("Room is full")
@@ -558,7 +581,8 @@ class RoomManager {
                 "displayName" to (user.displayName ?: "Member"),
                 "photoUrl" to (user.photoUrl?.toString() ?: ""),
                 "isReady" to true,
-                "hasMatchingFile" to true
+                "hasMatchingFile" to true,
+                "state" to "active"
             )
 
             val updates = mapOf(
@@ -724,8 +748,15 @@ class RoomManager {
         val user = currentUser ?: return
         heartbeatJob = heartbeatScope.launch {
             while (true) {
+                val updates = mapOf(
+                    "lastSeen" to ServerValue.TIMESTAMP,
+                    "displayName" to (user.displayName ?: "Member"),
+                    "photoUrl" to (user.photoUrl?.toString() ?: ""),
+                    "uid" to user.uid,
+                    "state" to "active"
+                )
                 roomsRef.child(roomCode).child("members").child(user.uid)
-                    .child("lastSeen").setValue(ServerValue.TIMESTAMP)
+                    .updateChildren(updates)
                 delay(HEARTBEAT_INTERVAL_MS)
             }
         }
@@ -736,23 +767,53 @@ class RoomManager {
         heartbeatJob = null
     }
 
-    fun setupOnDisconnect(roomCode: String, videoUriString: String) {
+    private var lobbyHeartbeatJob: Job? = null
+
+    fun startLobbyHeartbeat(roomCodes: List<String>) {
+        stopLobbyHeartbeat()
+        val user = currentUser ?: return
+        if (roomCodes.isEmpty()) return
+        lobbyHeartbeatJob = heartbeatScope.launch {
+            while (true) {
+                roomCodes.forEach { roomCode ->
+                    val updates = mapOf(
+                        "lastSeen" to ServerValue.TIMESTAMP,
+                        "displayName" to (user.displayName ?: "Member"),
+                        "photoUrl" to (user.photoUrl?.toString() ?: ""),
+                        "uid" to user.uid,
+                        "state" to "left"
+                    )
+                    roomsRef.child(roomCode).child("members").child(user.uid)
+                        .updateChildren(updates)
+                }
+                delay(HEARTBEAT_INTERVAL_MS)
+            }
+        }
+    }
+
+    fun stopLobbyHeartbeat() {
+        lobbyHeartbeatJob?.cancel()
+        lobbyHeartbeatJob = null
+    }
+
+    fun setupOnDisconnect(roomCode: String, videoUriString: String, videoFileName: String = "") {
         val user = currentUser ?: return
         val uid = user.uid
         roomsRef.child(roomCode).get().addOnSuccessListener { snapshot ->
             val hostName = snapshot.child("hostName").value as? String ?: ""
             val hostId = snapshot.child("hostId").value as? String ?: ""
             val isHost = uid == hostId
-            // When disconnected, remove member from room
-            roomsRef.child(roomCode).child("members").child(uid)
-                .onDisconnect().removeValue()
+            // When disconnected, mark state as left instead of deleting the node
+            roomsRef.child(roomCode).child("members").child(uid).child("state")
+                .onDisconnect().setValue("left")
             // When disconnected, save rejoin entry so user can rejoin later
             val rejoinData = mapOf<String, Any>(
                 "roomCode" to roomCode,
                 "hostName" to hostName,
                 "leftAt" to ServerValue.TIMESTAMP,
                 "isHost" to isHost,
-                "videoUriString" to videoUriString
+                "videoUriString" to videoUriString,
+                "videoFileName" to videoFileName
             )
             usersRef.child(uid).child("recentRooms").child(roomCode)
                 .onDisconnect().setValue(rejoinData)
@@ -782,7 +843,7 @@ class RoomManager {
                 val presenceMap = mutableMapOf<String, Long>()
                 val currentUid = currentUser?.uid ?: ""
                 var allOffline = true
-                var memberCount = 0
+                var activeMemberCount = 0
                 val currentMembers = mutableMapOf<String, String>()
 
                 snapshot.children.forEach { child ->
@@ -790,19 +851,27 @@ class RoomManager {
                     val lastSeen = (child.child("lastSeen").value as? Long)
                         ?: (child.child("lastSeen").value as? Number)?.toLong() ?: 0L
                     val displayName = child.child("displayName").value as? String ?: "Someone"
+                    val state = child.child("state").value as? String ?: "active"
                     presenceMap[uid] = lastSeen
                     currentMembers[uid] = displayName
-                    memberCount++
 
                     val isOnline = lastSeen > 0 && (now - lastSeen) < OFFLINE_THRESHOLD_MS
-                    if (isOnline) {
-                        allOffline = false
-                        notifiedOffline.remove(uid) // Reset if online
-                        notifiedLeft.remove(uid)
-                    } else if (uid != currentUid && lastSeen > 0) {
-                        // User is still in the database but heartbeat is stale — they went offline
-                        if (notifiedOffline.add(uid)) {
-                            onMemberOffline(uid, displayName)
+                    if (state == "left") {
+                        if (notifiedLeft.add(uid)) {
+                            onMemberLeft(uid, displayName)
+                        }
+                        notifiedOffline.remove(uid)
+                    } else {
+                        activeMemberCount++
+                        if (isOnline) {
+                            allOffline = false
+                            notifiedOffline.remove(uid) // Reset if online
+                            notifiedLeft.remove(uid)
+                        } else if (uid != currentUid && lastSeen > 0) {
+                            // User is still in the database but heartbeat is stale — they went offline
+                            if (notifiedOffline.add(uid)) {
+                                onMemberOffline(uid, displayName)
+                            }
                         }
                     }
                 }
@@ -822,7 +891,7 @@ class RoomManager {
                 previousMembers.clear()
                 previousMembers.putAll(currentMembers)
 
-                if (memberCount > 0 && allOffline) {
+                if (activeMemberCount > 0 && allOffline) {
                     onAllOffline()
                 }
 

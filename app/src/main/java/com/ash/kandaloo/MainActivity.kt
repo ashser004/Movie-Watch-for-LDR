@@ -92,10 +92,6 @@ fun KanDalooApp(
     var selectedVideoUri by remember { mutableStateOf<Uri?>(null) }
     // Track if we're transitioning to player (to suppress false leave notification)
     var isTransitioningToPlayer by remember { mutableStateOf(false) }
-    // Dialog state for file not found during rejoin
-    var showFileNotFoundDialog by remember { mutableStateOf(false) }
-    var showRejoinLobbyDialog by remember { mutableStateOf(false) }
-    var pendingRejoinRoomCode by remember { mutableStateOf("") }
     // Track if entering player from a rejoin action
     var isRejoining by remember { mutableStateOf(false) }
 
@@ -108,45 +104,20 @@ fun KanDalooApp(
         }
     }
 
-    // File not found dialog
-    if (showFileNotFoundDialog) {
-        AlertDialog(
-            onDismissRequest = { showFileNotFoundDialog = false },
-            title = { Text("Cannot Rejoin") },
-            text = { Text("The video file has been deleted or moved from its previous location. You can no longer rejoin this party.") },
-            confirmButton = {
-                TextButton(onClick = { showFileNotFoundDialog = false }) {
-                    Text("OK")
+    // Get display name/filename from URI
+    fun getFileNameFromUri(uri: Uri): String {
+        return try {
+            context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                val nameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                if (cursor.moveToFirst() && nameIndex >= 0) {
+                    cursor.getString(nameIndex)
+                } else {
+                    uri.lastPathSegment ?: ""
                 }
-            }
-        )
-    }
-
-    // Rejoin via lobby fallback dialog (for expired permissions or moved files)
-    if (showRejoinLobbyDialog) {
-        AlertDialog(
-            onDismissRequest = { showRejoinLobbyDialog = false },
-            title = { Text("Video File Not Found") },
-            text = { Text("The video file is no longer accessible at its previous location. Would you like to enter the room lobby and select the file again?") },
-            confirmButton = {
-                TextButton(onClick = {
-                    showRejoinLobbyDialog = false
-                    roomManager.removeRejoinEntry(pendingRejoinRoomCode)
-                    roomManager.joinRoom(
-                        roomCode = pendingRejoinRoomCode,
-                        onSuccess = { navController.navigate("room") },
-                        onFailure = { /* handled */ }
-                    )
-                }) {
-                    Text("Go to Lobby")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showRejoinLobbyDialog = false }) {
-                    Text("Cancel")
-                }
-            }
-        )
+            } ?: uri.lastPathSegment ?: ""
+        } catch (_: Exception) {
+            uri.lastPathSegment ?: ""
+        }
     }
 
     val startDestination = if (isLoggedIn) "home" else "login"
@@ -245,13 +216,31 @@ fun KanDalooApp(
                                     roomManager.removeRejoinEntry(rejoinInfo.roomCode)
                                     // Clean up local DB too
                                     scope.launch { roomSessionDao.delete(rejoinInfo.roomCode) }
-                                    showFileNotFoundDialog = true
+                                    // Directly navigate to room after joining room
+                                    roomManager.joinRoom(
+                                        roomCode = rejoinInfo.roomCode,
+                                        onSuccess = {
+                                            navController.navigate("room")
+                                        },
+                                        onFailure = { /* handled */ }
+                                    )
                                 }
                             )
                         } else {
-                            // File not accessible or URI invalid — offer fallback option to enter room lobby and choose again
-                            pendingRejoinRoomCode = rejoinInfo.roomCode
-                            showRejoinLobbyDialog = true
+                            // File not accessible or URI invalid — bypass popup and navigate directly to room lobby
+                            roomManager.joinRoom(
+                                roomCode = rejoinInfo.roomCode,
+                                onSuccess = {
+                                    // Update local DB: clear leftAt since we're back in
+                                    scope.launch {
+                                        roomSessionDao.getSession(rejoinInfo.roomCode)?.let { session ->
+                                            roomSessionDao.upsert(session.copy(leftAt = 0L))
+                                        }
+                                    }
+                                    navController.navigate("room")
+                                },
+                                onFailure = { /* handled */ }
+                            )
                         }
                     } else {
                         // No stored video URI — normal rejoin through room screen
@@ -291,10 +280,11 @@ fun KanDalooApp(
                     selectedVideoUri = uri
                     isTransitioningToPlayer = true
                     isRejoining = false
-                    // Update local DB with video URI
+                    val fileName = getFileNameFromUri(uri)
+                    // Update local DB with video URI and video filename
                     scope.launch {
                         roomSessionDao.getSession(currentRoomCode)?.let { session ->
-                            roomSessionDao.upsert(session.copy(videoUriString = uri.toString()))
+                            roomSessionDao.upsert(session.copy(videoUriString = uri.toString(), videoFileName = fileName))
                         }
                     }
                     navController.navigate("player") {
@@ -315,14 +305,16 @@ fun KanDalooApp(
                     isHost = isCurrentUserHost,
                     isRejoin = isRejoining,
                     onExit = {
-                        roomManager.leaveRoom(currentRoomCode, uri.toString())
-                        // Update local DB: mark as left with current timestamp and video URI
+                        val fileName = getFileNameFromUri(uri)
+                        roomManager.leaveRoom(currentRoomCode, uri.toString(), fileName)
+                        // Update local DB: mark as left with current timestamp, video URI, and video filename
                         scope.launch {
                             roomSessionDao.getSession(currentRoomCode)?.let { session ->
                                 roomSessionDao.upsert(
                                     session.copy(
                                         leftAt = System.currentTimeMillis(),
-                                        videoUriString = uri.toString()
+                                        videoUriString = uri.toString(),
+                                        videoFileName = fileName
                                     )
                                 )
                             }

@@ -78,6 +78,7 @@ import com.ash.kandaloo.ui.theme.GradientStart
 import com.google.firebase.auth.FirebaseAuth
 import com.ash.kandaloo.ui.components.UserAvatar
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -94,6 +95,8 @@ fun HomeScreen(
     var showJoinDialog by remember { mutableStateOf(false) }
     var isVisible by remember { mutableStateOf(false) }
     var rejoinRooms by remember { mutableStateOf<List<RejoinInfo>>(emptyList()) }
+    var isSearchingRooms by remember { mutableStateOf(false) }
+    val notifiedRooms = remember { mutableSetOf<String>() }
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(Unit) {
@@ -104,6 +107,7 @@ fun HomeScreen(
     // Uses local database + silent RTDB probes instead of Firebase-only getRecentRooms
     LifecycleResumeEffect(Unit) {
         scope.launch {
+            isSearchingRooms = true
             // Step 1: Clean up sessions older than 24 hours
             val cutoff = System.currentTimeMillis() - (24 * 60 * 60 * 1000L)
             roomSessionDao.deleteOlderThan(cutoff)
@@ -112,17 +116,18 @@ fun HomeScreen(
             val leftSessions = roomSessionDao.getLeftSessions()
             if (leftSessions.isEmpty()) {
                 rejoinRooms = emptyList()
+                isSearchingRooms = false
                 return@launch
             }
 
-            // Step 3: Probe each room silently in parallel
-            // As rooms are confirmed alive, they appear in the list one by one
+            // Step 3: Probe each room silently with a staggered start to prioritize latest rooms
             val confirmedRooms = mutableListOf<RejoinInfo>()
-            val probeJobs = leftSessions.map { session ->
+            val probeJobs = leftSessions.mapIndexed { index, session ->
                 launch {
+                    delay(index * 150L) // Stagger start slightly based on priority
                     val isAlive = roomManager.probeRoom(
                         roomCode = session.roomCode,
-                        attempts = 4,
+                        attempts = 6, // 15 seconds total probe timeout
                         delayMs = 2500L
                     )
                     if (isAlive) {
@@ -131,31 +136,46 @@ fun HomeScreen(
                             hostName = session.hostName,
                             leftAt = session.leftAt,
                             isHost = session.isHost,
-                            videoUriString = session.videoUriString
+                            videoUriString = session.videoUriString,
+                            videoFileName = session.videoFileName
                         )
                         synchronized(confirmedRooms) {
                             confirmedRooms.add(rejoinInfo)
                             confirmedRooms.sortByDescending { it.leftAt }
                             rejoinRooms = confirmedRooms.toList()
                         }
+
+                        // Auto-Notify "back online" in the chat of this room
+                        if (session.roomCode !in notifiedRooms) {
+                            notifiedRooms.add(session.roomCode)
+                            roomManager.sendSystemMessage(
+                                session.roomCode,
+                                "${user?.displayName ?: "User"} is back online",
+                                "system"
+                            )
+                        }
                     } else {
-                        // Room is dead — clean up silently
+                        // Room is dead — clean up silently after 15 seconds timeout
                         roomSessionDao.delete(session.roomCode)
                         // Also mark it as ended in RTDB if it has 0 members
                         roomManager.markRoomEndedIfEmpty(session.roomCode)
                         // Remove from Firebase rejoin entries too
                         roomManager.removeRejoinEntry(session.roomCode)
                     }
+
+                    // Keep presence active in all active rejoin rooms
+                    synchronized(confirmedRooms) {
+                        roomManager.startLobbyHeartbeat(confirmedRooms.map { it.roomCode })
+                    }
                 }
             }
             // Wait for all probes to finish
             probeJobs.forEach { it.join() }
-            // Final update with all confirmed rooms
-            synchronized(confirmedRooms) {
-                rejoinRooms = confirmedRooms.toList()
-            }
+            isSearchingRooms = false
         }
-        onPauseOrDispose { }
+        onPauseOrDispose {
+            roomManager.stopLobbyHeartbeat()
+        }
     }
 
     Scaffold(
@@ -231,14 +251,34 @@ fun HomeScreen(
             }
 
             // Rejoin cards
-            if (rejoinRooms.isNotEmpty()) {
+            if (rejoinRooms.isNotEmpty() || isSearchingRooms) {
                 item {
-                    Text(
-                        "Rejoin a Party",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(top = 8.dp)
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            "Rejoin a Party",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        if (isSearchingRooms) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(14.dp),
+                                    strokeWidth = 1.5.dp,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    "Searching...",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f)
+                                )
+                            }
+                        }
+                    }
                 }
                 items(rejoinRooms) { rejoinInfo ->
                     Card(
@@ -282,10 +322,17 @@ fun HomeScreen(
                                     fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
+                                if (rejoinInfo.videoFileName.isNotEmpty()) {
+                                    Text(
+                                        text = "Movie: ${rejoinInfo.videoFileName}",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+                                    )
+                                }
                                 Text(
                                     text = "Host: ${rejoinInfo.hostName}",
                                     style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
                                 )
                             }
 
