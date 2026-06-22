@@ -595,10 +595,6 @@ class RoomManager {
                     // Remove rejoin entry
                     removeRejoinEntry(roomCode)
                     sendJoinNotification(roomCode)
-                    // Pause all members for sync when someone rejoins a playing room
-                    if (status == "playing") {
-                        pauseForSync(roomCode, user.displayName ?: "Someone")
-                    }
                     onSuccess(status)
                 }
                 .addOnFailureListener { onFailure(it.message ?: "Failed to rejoin room") }
@@ -612,7 +608,7 @@ class RoomManager {
     /** The Cloudflare Worker URL — set this to your deployed worker endpoint */
     companion object {
         const val HEARTBEAT_INTERVAL_MS = 4000L
-        const val OFFLINE_THRESHOLD_MS = 10000L
+        const val OFFLINE_THRESHOLD_MS = 25000L
         const val WORKER_URL = "https://kandeloo.ashmithb796.workers.dev/sign"
     }
 
@@ -906,24 +902,7 @@ class RoomManager {
         awaitClose { roomsRef.child(roomCode).child("members").removeEventListener(listener) }
     }
 
-    // Pause all members for sync (used on rejoin)
-    fun pauseForSync(roomCode: String, displayName: String) {
-        roomsRef.child(roomCode).child("playbackState").get().addOnSuccessListener { snapshot ->
-            @Suppress("UNCHECKED_CAST")
-            val map = snapshot.value as? Map<String, Any?> ?: return@addOnSuccessListener
-            val currentState = PlaybackState.fromMap(map)
-            if (currentState.isPlaying) {
-                updatePlaybackState(roomCode, PlaybackState(
-                    isPlaying = false,
-                    positionMs = currentState.positionMs,
-                    speed = currentState.speed,
-                    lastUpdatedBy = currentUser?.uid ?: "",
-                    lastUpdatedAt = System.currentTimeMillis()
-                ))
-                sendSystemMessage(roomCode, "Paused for sync — $displayName rejoined", "system")
-            }
-        }
-    }
+
 
     fun setTyping(roomCode: String, isTyping: Boolean) {
         val uid = currentUser?.uid ?: return

@@ -91,6 +91,11 @@ class VideoPlayerViewModel(
                 memberCount.value = activeMembers.size
                 memberNames.clear()
                 memberNames.addAll(activeMembers)
+
+                // If the user is the only active member, automatically release play lock
+                if (activeMembers.size <= 1) {
+                    isPlayLocked.value = false
+                }
             }
         }
 
@@ -107,7 +112,17 @@ class VideoPlayerViewModel(
                 if (isPlayLocked.value && remoteState.isPlaying) {
                     isPlayLocked.value = false
                 }
-                _remotePlaybackEvent.trySend(remoteState)
+                
+                // Calculate catch-up position to handle network drops and late rejoins
+                val targetPosition = if (remoteState.isPlaying) {
+                    val now = System.currentTimeMillis()
+                    val elapsed = (now - remoteState.lastUpdatedAt).coerceAtLeast(0L)
+                    remoteState.positionMs + (elapsed * remoteState.speed).toLong()
+                } else {
+                    remoteState.positionMs
+                }
+                
+                _remotePlaybackEvent.trySend(remoteState.copy(positionMs = targetPosition))
 
                 // Auto-reset sync update flag after a delay to allow local player state to update
                 launch {
@@ -146,6 +161,11 @@ class VideoPlayerViewModel(
                     explicitlyLeftUsers.add(msg.senderId)
                 }
                 chatMessages.add(msg)
+
+                // Auto-pause if someone else joins the player while we are playing
+                if (msg.type == "join" && msg.senderId != currentUserId && isPlaying.value) {
+                    _localPlaybackRequest.trySend(LocalPlaybackRequest(isPlaying = false))
+                }
 
                 // If in fullscreen, also show as floating message overlay
                 if (isFullscreen.value && msg.senderId != currentUserId) {
@@ -248,6 +268,7 @@ class VideoPlayerViewModel(
     val remotePlaybackEvent = _remotePlaybackEvent.receiveAsFlow()
 
     fun handleSkip(currentPos: Long) {
+        if (isPlayLocked.value) return
         val now = System.currentTimeMillis()
         val lockAge = now - skipLockAt.longValue
         val isLockedByOther = skipLockBy.value.isNotEmpty() && skipLockBy.value != currentUserId && lockAge < 5000
@@ -275,6 +296,7 @@ class VideoPlayerViewModel(
     }
 
     fun handleRewind(currentPos: Long) {
+        if (isPlayLocked.value) return
         val now = System.currentTimeMillis()
         val lockAge = now - skipLockAt.longValue
         val isLockedByOther = skipLockBy.value.isNotEmpty() && skipLockBy.value != currentUserId && lockAge < 5000

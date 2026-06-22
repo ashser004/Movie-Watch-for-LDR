@@ -315,6 +315,7 @@ fun FullscreenPlayerLayout(
                             value = if (viewModel.duration.longValue > 0) {
                                 (if (viewModel.isUserSeeking.value) viewModel.seekPosition.longValue else viewModel.currentPosition.longValue).toFloat() / viewModel.duration.longValue.toFloat()
                             } else 0f,
+                            enabled = !viewModel.isPlayLocked.value,
                             onValueChange = { fraction ->
                                 viewModel.isUserSeeking.value = true
                                 viewModel.seekPosition.longValue = (fraction * viewModel.duration.longValue).toLong()

@@ -221,6 +221,7 @@ fun PortraitPlayerLayout(
             seekPosition = viewModel.seekPosition.longValue,
             currentPosition = viewModel.currentPosition.longValue,
             duration = viewModel.duration.longValue,
+            enabled = !viewModel.isPlayLocked.value,
             onSeekStart = { fraction ->
                 viewModel.isUserSeeking.value = true
                 viewModel.seekPosition.longValue = (fraction * viewModel.duration.longValue).toLong()
@@ -473,6 +474,7 @@ private fun PortraitSeekBar(
     seekPosition: Long,
     currentPosition: Long,
     duration: Long,
+    enabled: Boolean,
     onSeekStart: (Float) -> Unit,
     onSeekEnd: () -> Unit
 ) {
@@ -493,6 +495,7 @@ private fun PortraitSeekBar(
             value = if (duration > 0) {
                 (if (isUserSeeking) seekPosition else currentPosition).toFloat() / duration.toFloat()
             } else 0f,
+            enabled = enabled,
             onValueChange = { onSeekStart(it) },
             onValueChangeFinished = onSeekEnd,
             modifier = Modifier
