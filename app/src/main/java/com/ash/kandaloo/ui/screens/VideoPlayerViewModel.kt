@@ -46,8 +46,16 @@ class VideoPlayerViewModel(
     val isVideoEnded = mutableStateOf(false)
     val currentSpeed = mutableFloatStateOf(1.0f)
     val isPlayLocked = mutableStateOf(isRejoin)
+    val playLockStartTime = mutableLongStateOf(if (isRejoin) System.currentTimeMillis() else 0L)
     val audioIssueWarningShown = mutableStateOf(false)
     val isUploadingVoice = mutableStateOf(false)
+
+    fun getPlayLockRemainingSeconds(): Int {
+        if (!isPlayLocked.value || playLockStartTime.longValue == 0L) return 0
+        val elapsedMs = System.currentTimeMillis() - playLockStartTime.longValue
+        val remainingMs = 15_000L - elapsedMs
+        return (remainingMs / 1000L).toInt().coerceIn(1, 15)
+    }
 
     val skipLockBy = mutableStateOf("")
     val skipLockAt = mutableLongStateOf(0L)
@@ -159,6 +167,8 @@ class VideoPlayerViewModel(
             roomManager.observeChat(roomCode, sinceTimestamp).collect { msg ->
                 if (msg.type == "leave") {
                     explicitlyLeftUsers.add(msg.senderId)
+                    chatMessages.removeAll { it.id == "presence_left_${msg.senderId}" }
+                    floatingMessages.removeAll { it.id == "presence_left_${msg.senderId}" }
                 }
                 chatMessages.add(msg)
 
@@ -204,20 +214,23 @@ class VideoPlayerViewModel(
                 },
                 onMemberLeft = { uid, displayName ->
                     if (uid !in explicitlyLeftUsers) {
-                        val sysMsg = ChatMessage(
-                            id = "presence_left_$uid",
-                            senderId = "system",
-                            senderName = "System",
-                            message = "$displayName Left the room",
-                            timestamp = System.currentTimeMillis(),
-                            type = "system"
-                        )
-                        chatMessages.add(sysMsg)
-                        if (isFullscreen.value) {
-                            floatingMessages.add(sysMsg)
-                            viewModelScope.launch {
-                                delay(4000)
-                                floatingMessages.remove(sysMsg)
+                        val alreadyHasLeaveChat = chatMessages.any { it.senderId == uid && it.type == "leave" }
+                        if (!alreadyHasLeaveChat) {
+                            val sysMsg = ChatMessage(
+                                id = "presence_left_$uid",
+                                senderId = "system",
+                                senderName = "System",
+                                message = "$displayName Left the room",
+                                timestamp = System.currentTimeMillis(),
+                                type = "system"
+                            )
+                            chatMessages.add(sysMsg)
+                            if (isFullscreen.value) {
+                                floatingMessages.add(sysMsg)
+                                viewModelScope.launch {
+                                    delay(4000)
+                                    floatingMessages.remove(sysMsg)
+                                }
                             }
                         }
                     }

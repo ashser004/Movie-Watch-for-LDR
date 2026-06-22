@@ -248,7 +248,8 @@ fun FullscreenPlayerLayout(
                     IconButton(
                         onClick = {
                             if (viewModel.isPlayLocked.value) {
-                                Toast.makeText(context, "Ask another member to play", Toast.LENGTH_SHORT).show()
+                                val remaining = viewModel.getPlayLockRemainingSeconds()
+                                Toast.makeText(context, "Ask another member (in ${remaining}s)", Toast.LENGTH_SHORT).show()
                             } else if (viewModel.isVideoEnded.value) {
                                 exoPlayer.seekTo(0)
                                 exoPlayer.playWhenReady = true

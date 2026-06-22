@@ -1,6 +1,7 @@
 package com.ash.kandaloo.ui.screens
 
 import android.net.Uri
+import com.ash.kandaloo.data.RoomSessionDao
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -85,6 +86,7 @@ fun RoomScreen(
     isHost: Boolean,
     roomManager: RoomManager,
     preferencesManager: PreferencesManager,
+    roomSessionDao: RoomSessionDao,
     onBack: () -> Unit,
     onStartParty: (Uri) -> Unit,
     isTransitioningToPlayer: Boolean = false,
@@ -115,6 +117,18 @@ fun RoomScreen(
         if (roomData.isEmpty()) return@LaunchedEffect
 
         roomStatus = roomData["status"] as? String ?: "waiting"
+
+        val hostName = roomData["hostName"] as? String ?: ""
+        val hostId = roomData["hostId"] as? String ?: ""
+        if (hostName.isNotEmpty() && !isHost) {
+            scope.launch {
+                roomSessionDao.getSession(roomCode)?.let { session ->
+                    if (session.hostName.isEmpty()) {
+                        roomSessionDao.upsert(session.copy(hostName = hostName, hostId = hostId))
+                    }
+                }
+            }
+        }
 
         @Suppress("UNCHECKED_CAST")
         val membersMap = roomData["members"] as? Map<String, Map<String, Any?>> ?: emptyMap()

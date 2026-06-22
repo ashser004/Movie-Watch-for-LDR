@@ -272,6 +272,7 @@ fun KanDalooApp(
                 isHost = isCurrentUserHost,
                 roomManager = roomManager,
                 preferencesManager = preferencesManager,
+                roomSessionDao = roomSessionDao,
                 onBack = {
                     // leaveRoom is handled by RoomScreen's DisposableEffect
                     navController.popBackStack()
