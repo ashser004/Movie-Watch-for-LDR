@@ -5,7 +5,7 @@ plugins {
 android {
     namespace = "androidx.media3.decoder.ffmpeg"
     compileSdk = 36
-    ndkVersion = "26.3.11579264"
+    ndkVersion = "30.0.14904198"
 
     defaultConfig {
         minSdk = 29
