@@ -663,7 +663,17 @@ fun ChatBubble(
     val isSystem = message.type == "join" || message.type == "leave" || message.type == "system"
 
     if (isSystem) {
-        // System message (join/leave notifications)
+        // System message (join/leave/battery/presence notifications)
+        val isBattery = message.message.contains("battery is low", ignoreCase = true)
+        val batteryPct = if (isBattery) {
+            Regex("""\((\d+)%\)""").find(message.message)?.groupValues?.get(1)?.toIntOrNull()
+        } else null
+        val textColor = when {
+            isBattery && (batteryPct ?: 100) < 10 -> Color(0xFFEF5350) // Vibrant Red
+            isBattery && (batteryPct ?: 100) < 20 -> Color(0xFFFFA726) // Vibrant Orange
+            else -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+        }
+
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -673,8 +683,9 @@ fun ChatBubble(
             Text(
                 text = message.message,
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
-                fontStyle = FontStyle.Italic,
+                color = textColor,
+                fontStyle = if (isBattery) FontStyle.Normal else FontStyle.Italic,
+                fontWeight = if (isBattery) FontWeight.SemiBold else FontWeight.Normal,
                 fontSize = 11.sp
             )
         }

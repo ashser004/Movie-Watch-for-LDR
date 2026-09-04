@@ -15,6 +15,9 @@ import com.google.firebase.database.ServerValue
 import com.google.firebase.database.ValueEventListener
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlin.random.Random
 import kotlinx.coroutines.Job
@@ -35,7 +38,20 @@ class RoomManager {
     private val usersRef = database.getReference("users")
     private val auth = FirebaseAuth.getInstance()
 
-    private val currentUser get() = auth.currentUser
+    private val _isConnected = MutableStateFlow(true)
+    val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
+
+    init {
+        database.getReference(".info/connected").addValueEventListener(object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                val connected = snapshot.getValue(Boolean::class.java) ?: false
+                _isConnected.value = connected
+            }
+            override fun onCancelled(error: DatabaseError) {}
+        })
+    }
+
+    val currentUser get() = auth.currentUser
 
     fun generateRoomCode(): String {
         val chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
@@ -340,8 +356,6 @@ class RoomManager {
 
     fun endRoom(roomCode: String) {
         roomsRef.child(roomCode).child("status").setValue("ended")
-        // Clean up all users' rejoin entries for this room
-        cleanupRejoinEntriesForRoom(roomCode)
     }
 
     private fun cleanupRejoinEntriesForRoom(roomCode: String) {
@@ -353,10 +367,6 @@ class RoomManager {
                 usersRef.child(uid).child("recentRooms").child(roomCode).removeValue()
             }
         }
-    }
-
-    fun deleteRoom(roomCode: String) {
-        roomsRef.child(roomCode).removeValue()
     }
 
     // Chat methods
@@ -498,7 +508,7 @@ class RoomManager {
                 val state = child.child("state").value as? String
                 val lastSeen = (child.child("lastSeen").value as? Long)
                     ?: (child.child("lastSeen").value as? Number)?.toLong() ?: 0L
-                state != "left" && lastSeen > 0 && (now - lastSeen) < OFFLINE_THRESHOLD_MS
+                state != "left" && lastSeen > 0 && (now - lastSeen) < ROOM_INACTIVE_THRESHOLD_MS
             }
             hasActiveHeartbeat
         } catch (_: Exception) {
@@ -609,7 +619,9 @@ class RoomManager {
     companion object {
         const val HEARTBEAT_INTERVAL_MS = 4000L
         const val OFFLINE_THRESHOLD_MS = 25000L
-        const val WORKER_URL = "https://kandeloo.ashmithb796.workers.dev/sign"
+        const val UNSTABLE_THRESHOLD_MS = 15000L
+        const val ROOM_INACTIVE_THRESHOLD_MS = 60000L
+        const val WORKER_URL = "https://kandaloo.ashmithb796.workers.dev/sign"
     }
 
     fun sendVoiceMessage(roomCode: String, audioUrl: String, durationMs: Long, replyTo: ChatMessage? = null) {
@@ -739,7 +751,11 @@ class RoomManager {
     private var heartbeatJob: Job? = null
     private val heartbeatScope = CoroutineScope(Dispatchers.IO)
 
-    fun startHeartbeat(roomCode: String) {
+    fun startHeartbeat(
+        roomCode: String,
+        batteryProvider: () -> Int = { 100 },
+        screenProvider: () -> String = { "watching" }
+    ) {
         stopHeartbeat()
         val user = currentUser ?: return
         heartbeatJob = heartbeatScope.launch {
@@ -749,13 +765,20 @@ class RoomManager {
                     "displayName" to (user.displayName ?: "Member"),
                     "photoUrl" to (user.photoUrl?.toString() ?: ""),
                     "uid" to user.uid,
-                    "state" to "active"
+                    "state" to "active",
+                    "screen" to screenProvider(),
+                    "battery" to batteryProvider()
                 )
                 roomsRef.child(roomCode).child("members").child(user.uid)
                     .updateChildren(updates)
                 delay(HEARTBEAT_INTERVAL_MS)
             }
         }
+    }
+
+    fun setScreenState(roomCode: String, screen: String) {
+        val user = currentUser ?: return
+        roomsRef.child(roomCode).child("members").child(user.uid).child("screen").setValue(screen)
     }
 
     fun stopHeartbeat() {
@@ -799,9 +822,9 @@ class RoomManager {
             val hostName = snapshot.child("hostName").value as? String ?: ""
             val hostId = snapshot.child("hostId").value as? String ?: ""
             val isHost = uid == hostId
-            // When disconnected, mark state as left instead of deleting the node
+            // When disconnected, mark state as offline instead of deleting the node
             roomsRef.child(roomCode).child("members").child(uid).child("state")
-                .onDisconnect().setValue("left")
+                .onDisconnect().setValue("offline")
             // When disconnected, save rejoin entry so user can rejoin later
             val rejoinData = mapOf<String, Any>(
                 "roomCode" to roomCode,
@@ -826,20 +849,25 @@ class RoomManager {
 
     fun observePresence(
         roomCode: String,
-        onMemberOffline: (String, String) -> Unit,
+        onMemberMinimized: (String, String) -> Unit,
+        onMemberReturned: (String, String) -> Unit,
         onMemberLeft: (String, String) -> Unit,
-        onAllOffline: () -> Unit
+        onMemberOffline: (String, String) -> Unit,
+        onConnectionUnstable: (String, String) -> Unit,
+        onMemberReconnected: (String, String) -> Unit
     ): Flow<Map<String, Long>> = callbackFlow {
         val notifiedOffline = mutableSetOf<String>()
+        val notifiedUnstable = mutableSetOf<String>()
         val notifiedLeft = mutableSetOf<String>()
+        val wasOfflineOrUnstable = mutableSetOf<String>()
+        val previousScreens = mutableMapOf<String, String>()
         val previousMembers = mutableMapOf<String, String>() // Local cache: uid -> displayName to preserve names of removed/offline users
+
         val listener = object : ValueEventListener {
             override fun onDataChange(snapshot: DataSnapshot) {
                 val now = System.currentTimeMillis()
                 val presenceMap = mutableMapOf<String, Long>()
                 val currentUid = currentUser?.uid ?: ""
-                var allOffline = true
-                var activeMemberCount = 0
                 val currentMembers = mutableMapOf<String, String>()
 
                 snapshot.children.forEach { child ->
@@ -848,25 +876,65 @@ class RoomManager {
                         ?: (child.child("lastSeen").value as? Number)?.toLong() ?: 0L
                     val displayName = child.child("displayName").value as? String ?: "Someone"
                     val state = child.child("state").value as? String ?: "active"
+                    val screen = child.child("screen").value as? String ?: "watching"
                     presenceMap[uid] = lastSeen
                     currentMembers[uid] = displayName
 
-                    val isOnline = lastSeen > 0 && (now - lastSeen) < OFFLINE_THRESHOLD_MS
-                    if (state == "left") {
-                        if (notifiedLeft.add(uid)) {
-                            onMemberLeft(uid, displayName)
+                    val timeSinceLastSeen = if (lastSeen > 0) now - lastSeen else 0L
+                    val isOnline = lastSeen > 0 && timeSinceLastSeen < OFFLINE_THRESHOLD_MS
+                    val isUnstable = lastSeen > 0 && timeSinceLastSeen in UNSTABLE_THRESHOLD_MS..OFFLINE_THRESHOLD_MS
+
+                    when (state) {
+                        "left" -> {
+                            if (notifiedLeft.add(uid)) {
+                                onMemberLeft(uid, displayName)
+                            }
+                            notifiedOffline.remove(uid)
+                            notifiedUnstable.remove(uid)
+                            wasOfflineOrUnstable.remove(uid)
+                            previousScreens.remove(uid)
                         }
-                        notifiedOffline.remove(uid)
-                    } else {
-                        activeMemberCount++
-                        if (isOnline) {
-                            allOffline = false
-                            notifiedOffline.remove(uid) // Reset if online
-                            notifiedLeft.remove(uid)
-                        } else if (uid != currentUid && lastSeen > 0) {
-                            // User is still in the database but heartbeat is stale — they went offline
-                            if (notifiedOffline.add(uid)) {
+                        "offline" -> {
+                            if (uid != currentUid && notifiedOffline.add(uid)) {
+                                wasOfflineOrUnstable.add(uid)
                                 onMemberOffline(uid, displayName)
+                            }
+                            notifiedUnstable.remove(uid)
+                            previousScreens.remove(uid)
+                        }
+                        else -> { // "active"
+                            if (isOnline && !isUnstable) {
+                                if (wasOfflineOrUnstable.remove(uid)) {
+                                    notifiedOffline.remove(uid)
+                                    notifiedUnstable.remove(uid)
+                                    if (uid != currentUid) {
+                                        onMemberReconnected(uid, displayName)
+                                    }
+                                }
+                                notifiedOffline.remove(uid)
+                                notifiedUnstable.remove(uid)
+                                notifiedLeft.remove(uid)
+
+                                // Screen state transitions
+                                val prevScreen = previousScreens[uid]
+                                if (uid != currentUid && prevScreen != null && prevScreen != screen) {
+                                    if (screen == "minimized" && prevScreen == "watching") {
+                                        onMemberMinimized(uid, displayName)
+                                    } else if (screen == "watching" && prevScreen == "minimized") {
+                                        onMemberReturned(uid, displayName)
+                                    }
+                                }
+                                previousScreens[uid] = screen
+                            } else if (isUnstable) {
+                                if (uid != currentUid && notifiedUnstable.add(uid)) {
+                                    wasOfflineOrUnstable.add(uid)
+                                    onConnectionUnstable(uid, displayName)
+                                }
+                            } else if (lastSeen > 0 && timeSinceLastSeen >= OFFLINE_THRESHOLD_MS) {
+                                if (uid != currentUid && notifiedOffline.add(uid)) {
+                                    wasOfflineOrUnstable.add(uid)
+                                    onMemberOffline(uid, displayName)
+                                }
                             }
                         }
                     }
@@ -874,22 +942,20 @@ class RoomManager {
 
                 // Detect members whose nodes were REMOVED from the database.
                 // This means they explicitly left (leaveRoom removes the node).
-                // Don't fire onMemberOffline — the "left the room" chat message handles this.
                 previousMembers.forEach { (uid, displayName) ->
                     if (uid != currentUid && !currentMembers.containsKey(uid)) {
                         if (notifiedLeft.add(uid)) {
                             onMemberLeft(uid, displayName)
                         }
                         notifiedOffline.remove(uid)
+                        notifiedUnstable.remove(uid)
+                        wasOfflineOrUnstable.remove(uid)
+                        previousScreens.remove(uid)
                     }
                 }
 
                 previousMembers.clear()
                 previousMembers.putAll(currentMembers)
-
-                if (activeMemberCount > 0 && allOffline) {
-                    onAllOffline()
-                }
 
                 trySend(presenceMap)
             }

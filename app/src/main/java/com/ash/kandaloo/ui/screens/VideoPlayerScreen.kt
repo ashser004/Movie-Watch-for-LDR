@@ -1,6 +1,8 @@
 package com.ash.kandaloo.ui.screens
 
 import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.net.Uri
@@ -19,6 +21,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
@@ -48,6 +53,12 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
+
 @OptIn(UnstableApi::class)
 @Composable
 fun VideoPlayerScreen(
@@ -59,7 +70,7 @@ fun VideoPlayerScreen(
     onExit: () -> Unit
 ) {
     val context = LocalContext.current
-    val activity = context as? Activity
+    val activity = remember(context) { context.findActivity() }
     val scope = rememberCoroutineScope()
 
     val videoFileName = remember(videoUri) {
@@ -78,7 +89,7 @@ fun VideoPlayerScreen(
     }
 
     val viewModel: VideoPlayerViewModel = viewModel(
-        factory = VideoPlayerViewModelFactory(roomManager, roomCode, isHost, isRejoin, videoUri.toString(), videoFileName)
+        factory = VideoPlayerViewModelFactory(context, roomManager, roomCode, isHost, isRejoin, videoUri.toString(), videoFileName)
     )
 
     // Voice player for voice notes (separate from ExoPlayer)
@@ -286,11 +297,36 @@ fun VideoPlayerScreen(
         exoPlayer.prepare()
     }
 
-    // Screen Keep On
-    DisposableEffect(Unit) {
-        activity?.window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    // Dynamic Screen Backlight: Keep on while playing, normal sleep when paused
+    val isPlayingState by viewModel.isPlaying
+    DisposableEffect(isPlayingState) {
+        if (isPlayingState) {
+            activity?.window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
         onDispose {
             activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
+
+    // Lifecycle observer: Track minimized / watching screen state
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_STOP -> {
+                    viewModel.setScreenState("minimized")
+                }
+                Lifecycle.Event.ON_START -> {
+                    viewModel.setScreenState("watching")
+                }
+                else -> {}
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
         }
     }
 

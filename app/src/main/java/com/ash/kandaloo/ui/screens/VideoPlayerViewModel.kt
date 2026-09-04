@@ -9,8 +9,10 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.ash.kandaloo.data.ChatMessage
+import com.ash.kandaloo.data.LiveMemberInfo
 import com.ash.kandaloo.data.PlaybackState
 import com.ash.kandaloo.data.ReactionEvent
+import com.ash.kandaloo.service.BatteryMonitor
 import com.ash.kandaloo.service.RoomManager
 import com.google.firebase.auth.FirebaseAuth
 import kotlinx.coroutines.channels.Channel
@@ -20,6 +22,7 @@ import kotlinx.coroutines.launch
 import java.io.File
 
 class VideoPlayerViewModel(
+    val context: Context,
     val roomManager: RoomManager,
     val roomCode: String,
     val isHost: Boolean,
@@ -31,6 +34,15 @@ class VideoPlayerViewModel(
     private val currentUserId = FirebaseAuth.getInstance().currentUser?.uid ?: ""
     private val currentUserDisplayName = FirebaseAuth.getInstance().currentUser?.displayName ?: "Someone"
     private val explicitlyLeftUsers = mutableSetOf<String>()
+
+    private val batteryMonitor = BatteryMonitor(context)
+    val batteryLevel = batteryMonitor.batteryLevel
+    var currentScreenState = "watching"
+
+    fun setScreenState(screen: String) {
+        currentScreenState = screen
+        roomManager.setScreenState(roomCode, screen)
+    }
 
     // === Composable States ===
     val showControls = mutableStateOf(true)
@@ -68,6 +80,7 @@ class VideoPlayerViewModel(
     val typingNames = mutableStateListOf<String>()
     val memberCount = mutableStateOf(1)
     val memberNames = mutableStateListOf<String>()
+    val liveMembers = mutableStateListOf<LiveMemberInfo>()
 
     private val _errorEvent = Channel<String>(Channel.BUFFERED)
     val errorEvent = _errorEvent.receiveAsFlow()
@@ -76,8 +89,24 @@ class VideoPlayerViewModel(
     var isSyncUpdate = false
 
     init {
+        // Battery alerts debounced
+        batteryMonitor.start(
+            onLowBattery = { pct ->
+                val name = FirebaseAuth.getInstance().currentUser?.displayName ?: "Someone"
+                roomManager.sendSystemMessage(roomCode, "$name's battery is low ($pct%)", "system")
+            },
+            onCriticalBattery = { pct ->
+                val name = FirebaseAuth.getInstance().currentUser?.displayName ?: "Someone"
+                roomManager.sendSystemMessage(roomCode, "$name's battery is low ($pct%)", "system")
+            }
+        )
+
         // Heartbeats & disconnect tracking
-        roomManager.startHeartbeat(roomCode)
+        roomManager.startHeartbeat(
+            roomCode = roomCode,
+            batteryProvider = { batteryMonitor.batteryLevel.value },
+            screenProvider = { currentScreenState }
+        )
         roomManager.setupOnDisconnect(roomCode, videoUriString, videoFileName)
 
         // Observe room members (for LiveBadge)
@@ -86,19 +115,48 @@ class VideoPlayerViewModel(
                 @Suppress("UNCHECKED_CAST")
                 val membersMap = roomData["members"] as? Map<String, Any> ?: emptyMap()
                 val now = System.currentTimeMillis()
-                val activeMembers = membersMap.values.mapNotNull {
-                    val map = it as? Map<String, Any> ?: return@mapNotNull null
+                val activeMembers = mutableListOf<String>()
+                val liveInfoList = mutableListOf<LiveMemberInfo>()
+
+                membersMap.values.forEach { memberObj ->
+                    val map = memberObj as? Map<String, Any> ?: return@forEach
                     val uid = map["uid"] as? String ?: ""
                     val displayName = map["displayName"] as? String ?: "Someone"
                     val lastSeen = (map["lastSeen"] as? Long) ?: (map["lastSeen"] as? Number)?.toLong() ?: 0L
                     val state = map["state"] as? String ?: "active"
-                    
-                    val isActive = uid == currentUserId || (state == "active" && lastSeen > 0 && (now - lastSeen) < RoomManager.OFFLINE_THRESHOLD_MS)
-                    if (isActive) displayName else null
+                    val screen = map["screen"] as? String ?: "watching"
+                    val battery = (map["battery"] as? Long)?.toInt() ?: (map["battery"] as? Number)?.toInt() ?: 100
+
+                    val timeSinceLastSeen = if (lastSeen > 0) now - lastSeen else 0L
+                    val isOnline = uid == currentUserId || (state == "active" && lastSeen > 0 && timeSinceLastSeen < RoomManager.OFFLINE_THRESHOLD_MS)
+                    val isUnstable = uid != currentUserId && state == "active" && lastSeen > 0 && timeSinceLastSeen in RoomManager.UNSTABLE_THRESHOLD_MS..RoomManager.OFFLINE_THRESHOLD_MS
+                    val isLeft = state == "left"
+                    val isOffline = state == "offline" || (state != "left" && !isOnline && lastSeen > 0)
+                    val isMinimized = screen == "minimized"
+
+                    if (isOnline && state != "left") {
+                        activeMembers.add(displayName)
+                    }
+
+                    liveInfoList.add(
+                        LiveMemberInfo(
+                            uid = uid,
+                            name = displayName,
+                            isOnline = isOnline,
+                            isUnstable = isUnstable,
+                            isMinimized = isMinimized,
+                            isLeft = isLeft,
+                            isOffline = isOffline,
+                            battery = battery
+                        )
+                    )
                 }
+
                 memberCount.value = activeMembers.size
                 memberNames.clear()
                 memberNames.addAll(activeMembers)
+                liveMembers.clear()
+                liveMembers.addAll(liveInfoList)
 
                 // If the user is the only active member, automatically release play lock
                 if (activeMembers.size <= 1) {
@@ -188,59 +246,82 @@ class VideoPlayerViewModel(
             }
         }
 
-        // Observe presence (went offline / back online system messages + auto-exit)
+        // Observe presence
         viewModelScope.launch {
             roomManager.observePresence(
                 roomCode = roomCode,
-                onMemberOffline = { uid, displayName ->
-                    // Fires ONLY when the member's heartbeat is stale
-                    // (they are still in the database but not responding)
+                onMemberMinimized = { uid, displayName ->
                     val sysMsg = ChatMessage(
-                        id = "presence_off_$uid",
+                        id = "presence_min_${uid}_${System.currentTimeMillis()}",
                         senderId = "system",
                         senderName = "System",
-                        message = "$displayName went offline",
+                        message = "$displayName left the watch screen",
                         timestamp = System.currentTimeMillis(),
                         type = "system"
                     )
-                    chatMessages.add(sysMsg)
-                    if (isFullscreen.value) {
-                        floatingMessages.add(sysMsg)
-                        viewModelScope.launch {
-                            delay(4000)
-                            floatingMessages.remove(sysMsg)
-                        }
-                    }
+                    addSystemChatAndFloating(sysMsg)
+                },
+                onMemberReturned = { uid, displayName ->
+                    val sysMsg = ChatMessage(
+                        id = "presence_ret_${uid}_${System.currentTimeMillis()}",
+                        senderId = "system",
+                        senderName = "System",
+                        message = "$displayName returned to the watch screen",
+                        timestamp = System.currentTimeMillis(),
+                        type = "system"
+                    )
+                    addSystemChatAndFloating(sysMsg)
                 },
                 onMemberLeft = { uid, displayName ->
                     if (uid !in explicitlyLeftUsers) {
                         val alreadyHasLeaveChat = chatMessages.any { it.senderId == uid && it.type == "leave" }
                         if (!alreadyHasLeaveChat) {
                             val sysMsg = ChatMessage(
-                                id = "presence_left_$uid",
+                                id = "presence_left_${uid}_${System.currentTimeMillis()}",
                                 senderId = "system",
                                 senderName = "System",
-                                message = "$displayName Left the room",
+                                message = "$displayName left the room",
                                 timestamp = System.currentTimeMillis(),
                                 type = "system"
                             )
-                            chatMessages.add(sysMsg)
-                            if (isFullscreen.value) {
-                                floatingMessages.add(sysMsg)
-                                viewModelScope.launch {
-                                    delay(4000)
-                                    floatingMessages.remove(sysMsg)
-                                }
-                            }
+                            addSystemChatAndFloating(sysMsg)
                         }
                     }
                 },
-                onAllOffline = {
-                    roomManager.endRoom(roomCode)
-                    shouldExit.value = true
+                onMemberOffline = { uid, displayName ->
+                    val sysMsg = ChatMessage(
+                        id = "presence_off_${uid}_${System.currentTimeMillis()}",
+                        senderId = "system",
+                        senderName = "System",
+                        message = "$displayName went offline",
+                        timestamp = System.currentTimeMillis(),
+                        type = "system"
+                    )
+                    addSystemChatAndFloating(sysMsg)
+                },
+                onConnectionUnstable = { uid, displayName ->
+                    val sysMsg = ChatMessage(
+                        id = "presence_unst_${uid}_${System.currentTimeMillis()}",
+                        senderId = "system",
+                        senderName = "System",
+                        message = "$displayName's connection is unstable...",
+                        timestamp = System.currentTimeMillis(),
+                        type = "system"
+                    )
+                    addSystemChatAndFloating(sysMsg)
+                },
+                onMemberReconnected = { uid, displayName ->
+                    val sysMsg = ChatMessage(
+                        id = "presence_rec_${uid}_${System.currentTimeMillis()}",
+                        senderId = "system",
+                        senderName = "System",
+                        message = "$displayName reconnected",
+                        timestamp = System.currentTimeMillis(),
+                        type = "system"
+                    )
+                    addSystemChatAndFloating(sysMsg)
                 }
-            ).collect { presenceMap ->
-                // Handle went back online detection if needed (UI can just show standard rejoin messages from Chat join notification)
+            ).collect {
             }
         }
 
@@ -389,13 +470,27 @@ class VideoPlayerViewModel(
         }
     }
 
+    private fun addSystemChatAndFloating(sysMsg: ChatMessage) {
+        chatMessages.add(sysMsg)
+        if (isFullscreen.value) {
+            floatingMessages.add(sysMsg)
+            viewModelScope.launch {
+                delay(4000)
+                floatingMessages.remove(sysMsg)
+            }
+        }
+    }
+
     override fun onCleared() {
+        super.onCleared()
+        batteryMonitor.stop()
         roomManager.stopHeartbeat()
         roomManager.cancelOnDisconnect(roomCode)
     }
 }
 
 class VideoPlayerViewModelFactory(
+    private val context: Context,
     private val roomManager: RoomManager,
     private val roomCode: String,
     private val isHost: Boolean,
@@ -405,6 +500,6 @@ class VideoPlayerViewModelFactory(
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
-        return VideoPlayerViewModel(roomManager, roomCode, isHost, isRejoin, videoUriString, videoFileName) as T
+        return VideoPlayerViewModel(context.applicationContext, roomManager, roomCode, isHost, isRejoin, videoUriString, videoFileName) as T
     }
 }

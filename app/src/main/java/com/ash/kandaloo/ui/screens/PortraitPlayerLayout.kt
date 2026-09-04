@@ -40,6 +40,7 @@ import androidx.media3.ui.CaptionStyleCompat
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import com.ash.kandaloo.data.ChatMessage
+import com.ash.kandaloo.data.LiveMemberInfo
 import com.ash.kandaloo.data.PlaybackState
 import com.ash.kandaloo.data.ReactionEvent
 import com.ash.kandaloo.service.RoomManager
@@ -147,6 +148,7 @@ fun PortraitPlayerLayout(
                     showReactions = viewModel.showReactions.value,
                     memberCount = viewModel.memberCount.value,
                     memberNames = viewModel.memberNames.toList(),
+                    liveMembers = viewModel.liveMembers,
                     onPlayPause = {
                         if (viewModel.isPlayLocked.value) {
                             val remaining = viewModel.getPlayLockRemainingSeconds()
@@ -285,6 +287,7 @@ private fun PortraitVideoOverlay(
     showReactions: Boolean,
     memberCount: Int,
     memberNames: List<String>,
+    liveMembers: List<LiveMemberInfo> = emptyList(),
     onPlayPause: () -> Unit,
     onSkipBackward: () -> Unit,
     onSkipForward: () -> Unit,
@@ -347,7 +350,8 @@ private fun PortraitVideoOverlay(
             // Live Badge
             LiveBadge(
                 memberCount = memberCount,
-                memberNames = memberNames
+                memberNames = memberNames,
+                liveMembers = liveMembers
             )
             Spacer(modifier = Modifier.width(4.dp))
         }

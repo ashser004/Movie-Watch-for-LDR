@@ -58,7 +58,22 @@ data class MemberData(
     val isReady: Boolean = false,
     val hasMatchingFile: Boolean = false,
     val autoPlay: Boolean = false,
-    val videoMetadata: VideoMetadata? = null
+    val videoMetadata: VideoMetadata? = null,
+    val state: String = "active",
+    val screen: String = "watching",
+    val battery: Int = 100,
+    val lastSeen: Long = 0L
+)
+
+data class LiveMemberInfo(
+    val uid: String = "",
+    val name: String = "",
+    val isOnline: Boolean = true,
+    val isUnstable: Boolean = false,
+    val isMinimized: Boolean = false,
+    val isLeft: Boolean = false,
+    val isOffline: Boolean = false,
+    val battery: Int = 100
 )
 
 data class PlaybackState(

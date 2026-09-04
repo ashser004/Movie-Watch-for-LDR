@@ -96,7 +96,16 @@ fun FloatingChatBubble(
         )
     }
 
-    val isSystem = message.type == "join" || message.type == "leave"
+    val isSystem = message.type == "join" || message.type == "leave" || message.type == "system"
+    val isBattery = message.message.contains("battery is low", ignoreCase = true)
+    val batteryPct = if (isBattery) {
+        Regex("""\((\d+)%\)""").find(message.message)?.groupValues?.get(1)?.toIntOrNull()
+    } else null
+    val systemTextColor = when {
+        isBattery && (batteryPct ?: 100) < 10 -> Color(0xFFEF5350) // Vibrant Red
+        isBattery && (batteryPct ?: 100) < 20 -> Color(0xFFFFA726) // Vibrant Orange
+        else -> Color.White.copy(alpha = 0.85f)
+    }
 
     if (alphaAnim.value > 0f) {
         Box(
@@ -121,9 +130,9 @@ fun FloatingChatBubble(
             if (isSystem) {
                 Text(
                     text = message.message,
-                    color = Color.White.copy(alpha = 0.8f),
+                    color = systemTextColor,
                     fontSize = 12.sp,
-                    fontWeight = FontWeight.Medium
+                    fontWeight = if (isBattery) FontWeight.Bold else FontWeight.Medium
                 )
             } else {
                 Column {

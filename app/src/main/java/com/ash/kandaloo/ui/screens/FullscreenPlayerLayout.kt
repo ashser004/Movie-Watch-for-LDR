@@ -219,7 +219,8 @@ fun FullscreenPlayerLayout(
                     // Live Badge
                     LiveBadge(
                         memberCount = viewModel.memberCount.value,
-                        memberNames = viewModel.memberNames.toList()
+                        memberNames = viewModel.memberNames.toList(),
+                        liveMembers = viewModel.liveMembers
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                 }
