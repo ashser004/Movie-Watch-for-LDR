@@ -621,7 +621,7 @@ class RoomManager {
         const val OFFLINE_THRESHOLD_MS = 25000L
         const val UNSTABLE_THRESHOLD_MS = 15000L
         const val ROOM_INACTIVE_THRESHOLD_MS = 60000L
-        const val WORKER_URL = "https://kandaloo.ashmithb796.workers.dev/sign"
+        const val WORKER_URL = "https://kandeloo.ashmithb796.workers.dev/sign"
     }
 
     fun sendVoiceMessage(roomCode: String, audioUrl: String, durationMs: Long, replyTo: ChatMessage? = null) {
