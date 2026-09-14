@@ -54,6 +54,12 @@ jobs:
       - name: Make Gradle wrapper executable
         run: chmod +x ./gradlew
 
+      - name: Sanitize environment for Linux runner
+        shell: bash
+        run: |
+          sed -i '/org.gradle.java.home/d' gradle.properties || true
+          sed -i '/ndkVersion/d' ffmpeg-decoder/build.gradle.kts || true
+
       - name: Decode Firebase config
         shell: bash
         run: |
