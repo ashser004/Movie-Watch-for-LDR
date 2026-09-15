@@ -364,17 +364,28 @@ fun FullscreenPlayerLayout(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Box {
-                            IconButton(onClick = { viewModel.showSpeedMenu.value = !viewModel.showSpeedMenu.value }) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(
-                                        Icons.Default.Speed,
-                                        contentDescription = "Speed",
-                                        tint = Color.White,
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text("${viewModel.currentSpeed.floatValue}x", color = Color.White, style = MaterialTheme.typography.labelSmall)
-                                }
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable { viewModel.showSpeedMenu.value = !viewModel.showSpeedMenu.value }
+                                    .padding(horizontal = 8.dp, vertical = 6.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.Speed,
+                                    contentDescription = "Speed",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    "${viewModel.currentSpeed.floatValue}x",
+                                    color = Color.White,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Medium,
+                                    maxLines = 1,
+                                    softWrap = false
+                                )
                             }
                             DropdownMenu(expanded = viewModel.showSpeedMenu.value, onDismissRequest = { viewModel.showSpeedMenu.value = false }) {
                                 listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f).forEach { speed ->

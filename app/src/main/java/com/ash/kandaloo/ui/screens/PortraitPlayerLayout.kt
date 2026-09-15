@@ -426,17 +426,28 @@ private fun PortraitVideoOverlay(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box {
-                IconButton(onClick = onToggleSpeedMenu) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            Icons.Default.Speed,
-                            contentDescription = "Speed",
-                            tint = Color.White,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(modifier = Modifier.width(3.dp))
-                        Text("${currentSpeed}x", color = Color.White, fontSize = 11.sp)
-                    }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable(onClick = onToggleSpeedMenu)
+                        .padding(horizontal = 8.dp, vertical = 6.dp)
+                ) {
+                    Icon(
+                        Icons.Default.Speed,
+                        contentDescription = "Speed",
+                        tint = Color.White,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        "${currentSpeed}x",
+                        color = Color.White,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        softWrap = false
+                    )
                 }
                 DropdownMenu(expanded = showSpeedMenu, onDismissRequest = onDismissSpeedMenu) {
                     listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f).forEach { speed ->
